@@ -37,27 +37,27 @@ fn now_ms() -> i64 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── managed state on the BUILDER, before setup() ── the webview's first
+    // invoke("get_config") can dispatch before the setup closure runs — Windows
+    // WebView2 loses this race that macOS WKWebView wins — so managing state INSIDE
+    // setup yields "state not managed for get_config" on Windows only. Resolve the
+    // config dir with the standalone app_config_dir() (no app handle needed; it returns
+    // the same path Tauri does for this bundle id, and is already what the headless
+    // commands use) and manage during build(), before the webview exists — then no
+    // command can ever run without state, on any platform.
+    let dir = app_config_dir();
+    auth::init(&dir); // token file lives next to config.json
+    let config_path = dir.join("config.json");
+    let state = AppState {
+        config: std::sync::Mutex::new(AppConfig::load(&config_path)),
+        config_path,
+    };
+
     tauri::Builder::default()
+        .manage(state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // ── managed state FIRST ── every command needs AppState. If a plugin
-            // init below fails on some platform (Windows notably), a `?` there would
-            // skip this manage() and make the very first command the UI calls
-            // (get_config) fail with "state not managed". So manage before touching
-            // any plugin, and make the plugin inits non-fatal.
-            let dir = app
-                .path()
-                .app_config_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let config_path = dir.join("config.json");
-            auth::init(&dir); // token file lives next to config.json
-            let config = AppConfig::load(&config_path);
-            app.manage(AppState {
-                config: std::sync::Mutex::new(config),
-                config_path,
-            });
-
             // ── plugins (desktop only) ── updater = signature verification, process
             // = relaunch(), notification = OS toasts, autostart = launch-at-login.
             // NON-FATAL: a plugin that fails to init on one platform must not tank
