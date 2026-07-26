@@ -1,0 +1,65 @@
+# GEC Uplink — Flatpak manifest (the 4th target: Steam Deck / any Linux desktop).
+#
+# Packages the CI-built .deb (clean, un-patched binary) into the GNOME 46 runtime,
+# which ships webkit2gtk 2.44 — the last webkit that renders on SteamOS (newer
+# webkit crashes on Wayland with EGL_BAD_PARAMETER). The .deb binary keeps its
+# normal ld-linux interpreter, so it runs under the runtime (the AppImage binary
+# does NOT — linuxdeploy patches its interpreter → _start segfault). The runtime
+# provides webkit/gtk/glib; we install ONLY the binary + desktop + icon.
+#
+# CI copies the built .deb next to this manifest as `gec-uplink.deb` before building.
+# Runtime note: 46 is EOL (2025-04) but is the newest webkit that renders on the
+# Deck; revisit bumping to a supported runtime once its webkit renders there too.
+id: com.goblinengineering.uplink
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: gec-uplink
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=ipc
+  - --share=network                 # Uplink talks to goblineng.co
+  - --filesystem=host               # reach WoW AddOns anywhere (Proton compatdata, microSD, …)
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --filesystem=xdg-run/tray-icon:create
+  # webkit 2.44 (GNOME 46 runtime) renders native <select> popups via the GTK
+  # theme and IGNORES our CSS on <option> — the reason the Deck dropdowns read
+  # white-on-white while the Mac's are fine. Force a dark GTK theme so the
+  # native popups are legible on camera. (Robust fallback: custom JS dropdown.)
+  - --env=GTK_THEME=Adwaita:dark
+
+modules:
+  # System-tray library Tauri needs (GNOME runtime doesn't ship it). Satisfies the
+  # libappindicator3.so.1 fallback the app looks for. CI clones flathub/shared-modules
+  # into flatpak/shared-modules before building (see release.yml).
+  - shared-modules/libappindicator/libappindicator-gtk3-12.10.json
+
+  - name: gec-uplink
+    buildsystem: simple
+    sources:
+      - type: file
+        path: gec-uplink.deb        # ← CI drops the built .deb here
+      - type: file
+        path: com.goblinengineering.uplink.metainfo.xml
+    build-commands:
+      - ar x gec-uplink.deb
+      - mkdir -p deb && tar -C deb -xf data.tar.*
+      - install -Dm755 deb/usr/bin/gec-uplink /app/bin/gec-uplink
+      # desktop file (rename Icon= to the flatpak id)
+      - |
+        D=$(ls deb/usr/share/applications/*.desktop 2>/dev/null | head -1)
+        if [ -n "$D" ]; then
+          sed -i 's/^Icon=.*/Icon=com.goblinengineering.uplink/' "$D"
+          install -Dm644 "$D" /app/share/applications/com.goblinengineering.uplink.desktop
+        fi
+      # icons (whatever sizes the .deb shipped)
+      - |
+        for px in 32 128 256 512; do
+          I=$(ls "deb/usr/share/icons/hicolor/${px}x${px}/apps/"*.png 2>/dev/null | head -1)
+          [ -n "$I" ] && install -Dm644 "$I" "/app/share/icons/hicolor/${px}x${px}/apps/com.goblinengineering.uplink.png"
+        done
+        true
+      - install -Dm644 com.goblinengineering.uplink.metainfo.xml /app/share/metainfo/com.goblinengineering.uplink.metainfo.xml

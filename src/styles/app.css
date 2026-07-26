@@ -1,0 +1,297 @@
+/* Uplink component styles. Ported the website's panel/button/chip/meter idioms
+   (globals.css) so the app reads as the same product, plus the app-shell layout
+   (sidebar window + collapsed tray panel). Every color flows through a theme
+   variable from themes.css — no hardcoded hex here. */
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background-color: var(--color-deep);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  background-image:
+    radial-gradient(1200px 500px at 50% -100px, var(--glow-a), transparent 70%),
+    radial-gradient(900px 700px at 90% 110%, var(--glow-b), transparent 60%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: auto, auto, 44px 44px, 44px 44px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--cta-glow-hover); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+a { color: var(--color-brass-hi); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── type ── */
+.display { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.02em; }
+.brass-text {
+  background: linear-gradient(180deg, var(--brasstext-1), var(--brasstext-2) 55%, var(--brasstext-3));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.kicker {
+  font-family: var(--font-mono); font-size: 0.6875rem; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--color-brass-hi);
+}
+.muted { color: var(--color-ink-muted); }
+/* rendered-markdown broadcast body: tight, readable blocks inside the panel */
+.broadcast-body > :first-child { margin-top: 0; }
+.broadcast-body > :last-child { margin-bottom: 0; }
+.broadcast-body p { margin: 0.35rem 0; }
+.broadcast-body ul, .broadcast-body ol { margin: 0.35rem 0; padding-left: 1.2rem; }
+.broadcast-body a { color: var(--color-brass, #c9a24a); text-decoration: underline; }
+.broadcast-body code { font-family: var(--font-mono); font-size: 0.9em; }
+.faint { color: var(--color-ink-faint); }
+.tabular { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ── panels ── */
+.panel {
+  background: linear-gradient(180deg, var(--color-panel-2), var(--color-panel));
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+}
+.panel-brass { position: relative; border-radius: 12px; padding: 1px;
+  background: linear-gradient(160deg, var(--frame-1), var(--frame-2) 30%, var(--frame-3) 55%, var(--frame-4) 85%, var(--frame-1)); }
+.panel-brass > .panel-brass-in {
+  background: linear-gradient(180deg, var(--frame-in), var(--color-panel));
+  border-radius: 11px; height: 100%;
+}
+
+/* ── buttons ── */
+.btn-spark, .btn-brass, .btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  font: inherit; cursor: pointer; border-radius: 8px; transition: all 0.12s ease;
+}
+.btn-spark {
+  background: linear-gradient(180deg, var(--cta-1), var(--cta-2) 60%, var(--cta-3));
+  color: var(--cta-ink); font-weight: 700; padding: 0.55rem 1.1rem;
+  border: 1px solid var(--cta-border);
+  box-shadow: inset 0 1px 0 var(--cta-sheen), 0 2px 10px var(--cta-glow);
+}
+.btn-spark:hover:not(:disabled) { filter: brightness(1.07); transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 var(--cta-sheen), 0 4px 16px var(--cta-glow-hover); }
+.btn-spark:disabled { filter: grayscale(0.7) brightness(0.9); cursor: not-allowed; }
+.btn-brass {
+  color: var(--color-brass-hi); font-weight: 600; padding: 0.55rem 1.1rem;
+  border: 1px solid var(--rule-soft); background: var(--accent-soft);
+}
+.btn-brass:hover:not(:disabled) { background: var(--accent-soft-hover); border-color: var(--color-brass); }
+.btn-brass:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost {
+  color: var(--color-ink-muted); padding: 0.45rem 0.85rem;
+  border: 1px solid var(--color-line); background: transparent;
+}
+.btn-ghost:hover:not(:disabled) { color: var(--color-ink); border-color: var(--color-brass); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-sm { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
+
+/* ── chips / status ── */
+.chip {
+  display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono);
+  font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase;
+  border-radius: 999px; padding: 0.15rem 0.6rem; border: 1px solid var(--color-line);
+  color: var(--color-ink-muted); white-space: nowrap;
+}
+.chip-spark { color: var(--color-spark-hi); border-color: color-mix(in srgb, var(--color-spark) 45%, transparent); background: color-mix(in srgb, var(--color-spark) 8%, transparent); }
+.chip-green { color: var(--color-goblin); border-color: color-mix(in srgb, var(--color-goblin) 45%, transparent); background: color-mix(in srgb, var(--color-goblin) 8%, transparent); }
+.chip-brass { color: var(--color-brass-hi); border-color: color-mix(in srgb, var(--color-brass-hi) 40%, transparent); background: color-mix(in srgb, var(--color-brass-hi) 7%, transparent); }
+.chip-danger { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); background: color-mix(in srgb, var(--color-danger) 8%, transparent); }
+
+/* ── inputs ── */
+input[type="text"], input[type="password"], select, textarea {
+  background: var(--meter-bg); border: 1px solid var(--color-line); border-radius: 8px;
+  padding: 0.55rem 0.8rem; color: var(--color-ink); outline: none;
+  transition: border-color 0.12s ease; font: inherit; width: 100%;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--color-brass); }
+/* placeholders read as hints, not entered text */
+input::placeholder, textarea::placeholder { color: var(--color-ink-faint); opacity: 1; }
+/* SteamOS/webkit renders <select>/<option> with OS defaults (white-on-white,
+   unreadable on the Deck). Force explicit theme colors so the dropdown + its
+   options are legible everywhere; match the field bg/border/padding. */
+select {
+  background: var(--meter-bg); color: var(--color-ink);
+  border: 1px solid var(--color-line); border-radius: 8px; padding: 0.55rem 0.8rem;
+}
+select option {
+  background: var(--color-panel); color: var(--color-ink);
+}
+
+/* Custom dropdown (components/Select.tsx). Native <select> popups can't be
+   themed on old webkit — the Deck rendered them white-on-white — so we replace
+   them with this fully CSS-controlled control that's legible everywhere. */
+.jsel { position: relative; width: 100%; }
+.jsel-btn {
+  width: 100%; display: flex; align-items: center; gap: 0.5rem;
+  background: var(--meter-bg); color: var(--color-ink);
+  border: 1px solid var(--color-line); border-radius: 8px;
+  padding: 0.55rem 0.8rem; font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+.jsel-btn:disabled { opacity: 0.5; cursor: default; }
+.jsel.open .jsel-btn, .jsel-btn:focus { border-color: var(--color-brass); outline: none; }
+.jsel-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jsel-caret { color: var(--color-ink-muted); font-size: 0.7rem; }
+.jsel-menu {
+  position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; right: 0;
+  margin: 0; padding: 0.25rem; list-style: none; max-height: 240px; overflow-y: auto;
+  background: var(--color-panel); color: var(--color-ink);
+  border: 1px solid var(--color-line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.jsel-opt {
+  padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jsel-opt:hover { background: var(--accent-soft-hover); }
+.jsel-opt.sel { color: var(--color-brass-hi); }
+
+label.field { display: block; }
+label.field > span { display: block; font-size: 0.75rem; color: var(--color-ink-muted); margin-bottom: 0.3rem; }
+
+/* ── meters ── */
+.meter { height: 8px; border-radius: 999px; background: var(--meter-bg); border: 1px solid var(--color-line); overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--meter-1), var(--meter-2) 70%, var(--meter-3));
+  box-shadow: 0 0 8px var(--meter-glow); }
+
+/* ── section divider ── */
+.cog-rule { display: flex; align-items: center; gap: 0.9rem; }
+.cog-rule::before, .cog-rule::after { content: ""; height: 1px; flex: 1;
+  background: linear-gradient(90deg, transparent, var(--rule-soft) 30%, var(--rule-hard) 50%, var(--rule-soft) 70%, transparent); }
+
+/* ── signature machine-hall idioms (ported from the website) ── */
+
+/* brass hairline strip — the site's brand accent at the top of chrome */
+.hairline { height: 2px; flex: none; background: linear-gradient(90deg, transparent, var(--color-brass) 50%, transparent); }
+
+/* riveted corners for framed panels (used with .panel-brass) */
+.rivets::before, .rivets::after,
+.rivets > .rivets-b::before, .rivets > .rivets-b::after {
+  content: ""; position: absolute; width: 6px; height: 6px; border-radius: 999px;
+  background: radial-gradient(circle at 35% 30%, var(--metal-1), var(--metal-2) 60%, var(--metal-3));
+  box-shadow: 0 1px 2px var(--card-shadow); z-index: 2;
+}
+.rivets::before { top: 7px; left: 7px; }
+.rivets::after { top: 7px; right: 7px; }
+.rivets > .rivets-b::before { bottom: 7px; left: 7px; }
+.rivets > .rivets-b::after { bottom: 7px; right: 7px; }
+
+/* cog badge — the brandmark disc (also used for stat/nav accents) */
+.badge-cog {
+  display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex: none;
+  border-radius: 999px; font-family: var(--font-display); font-weight: 700; color: var(--metal-ink);
+  background: radial-gradient(circle at 32% 28%, var(--metal-1), var(--metal-2) 45%, var(--metal-3) 85%);
+  border: 2px solid var(--metal-border); box-shadow: inset 0 1px 0 var(--cta-sheen), 0 2px 6px var(--card-shadow);
+}
+.badge-cog.badge-locked {
+  background: radial-gradient(circle at 32% 28%, var(--color-panel-2), var(--color-panel) 60%, var(--color-deep-2));
+  color: var(--color-ink-faint); border-color: var(--color-line); box-shadow: none;
+}
+/* the GEC gear brandmark (sidebar + tray header) */
+.brandmark-logo { width: 40px; height: 40px; flex: none; object-fit: contain; }
+
+.meter-green > i {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-goblin) 70%, black), var(--color-goblin) 70%, color-mix(in srgb, var(--color-goblin) 70%, white));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-goblin) 45%, transparent);
+}
+
+/* card hover lift + staggered load reveal (site parity) */
+.lift { transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }
+.lift:hover { transform: translateY(-2px); border-color: var(--color-brass); box-shadow: 0 8px 24px var(--card-shadow); }
+.rise { opacity: 0; transform: translateY(12px); animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+@keyframes rise { to { opacity: 1; transform: none; } }
+.rise-1 { animation-delay: 0.04s; } .rise-2 { animation-delay: 0.12s; } .rise-3 { animation-delay: 0.2s; } .rise-4 { animation-delay: 0.3s; }
+@media (prefers-reduced-motion: reduce) { .rise { animation: none; opacity: 1; transform: none; } .meter > i { animation: none; } }
+
+/* connection dot */
+.dot { width: 9px; height: 9px; border-radius: 999px; display: inline-block; flex: none; }
+.dot-on { background: var(--color-goblin); box-shadow: 0 0 6px color-mix(in srgb, var(--color-goblin) 60%, transparent); }
+.dot-off { background: var(--color-ink-faint); }
+.dot-warn { background: var(--color-spark); box-shadow: 0 0 6px color-mix(in srgb, var(--color-spark) 60%, transparent); }
+
+/* ══════════════════ full window shell ══════════════════ */
+.window { display: flex; flex-direction: column; height: 100%; }
+.shell { display: grid; grid-template-columns: 216px 1fr; flex: 1; min-height: 0; }
+.sidebar {
+  border-right: 1px solid var(--color-brass); border-image: linear-gradient(180deg, var(--color-brass), transparent 60%) 1;
+  background: linear-gradient(180deg, var(--color-deep-2), var(--color-deep));
+  display: flex; flex-direction: column; padding: 1rem 0.75rem; gap: 0.2rem;
+}
+.brandmark { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.4rem 1rem; }
+.page-head h1 {
+  background: linear-gradient(180deg, var(--brasstext-1), var(--brasstext-2) 55%, var(--brasstext-3));
+  -webkit-background-clip: text; background-clip: text; color: transparent; width: fit-content;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; border-radius: 8px;
+  color: var(--color-ink-muted); cursor: pointer; border: 1px solid transparent; font-size: 0.92rem;
+}
+.nav-item:hover { color: var(--color-ink); background: var(--accent-soft); }
+.nav-item.active { color: var(--color-brass-hi); background: var(--accent-soft-hover); border-color: var(--rule-soft); }
+.nav-icon { width: 18px; text-align: center; }
+.sidebar-foot { margin-top: auto; padding: 0.5rem; font-size: 0.7rem; color: var(--color-ink-faint); }
+
+.content { overflow-y: auto; padding: 1.5rem 1.75rem; }
+.page-head { margin-bottom: 1.25rem; }
+.page-head h1 { font-family: var(--font-display); font-size: 1.6rem; margin: 0.2rem 0 0; }
+
+.card { padding: 1rem 1.1rem; margin-bottom: 1rem; }
+.card h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+.row { display: flex; align-items: center; gap: 0.6rem; }
+.row.between { justify-content: space-between; }
+.stack { display: flex; flex-direction: column; gap: 0.5rem; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.spacer { flex: 1; }
+
+/* pills (install switcher) */
+.pill {
+  display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.8rem;
+  border-radius: 999px; border: 1px solid var(--color-line); background: var(--accent-soft);
+  color: var(--color-ink-muted); cursor: pointer; font-size: 0.85rem; white-space: nowrap;
+}
+.pill:hover { border-color: var(--color-brass); color: var(--color-ink); }
+.pill.active { border-color: var(--color-brass); color: var(--color-brass-hi); background: var(--accent-soft-hover); }
+
+/* accordions */
+.acc { margin-bottom: 0.6rem; }
+.acc-head { display: flex; align-items: center; gap: 0.7rem; padding: 0.8rem 1rem; cursor: pointer; }
+.acc-body { padding: 0 1rem 1rem; border-top: 1px solid var(--color-line); }
+.acc-body p { color: var(--color-ink-muted); line-height: 1.5; }
+
+/* stat blocks */
+.stat { padding: 0.8rem 1rem; text-align: center; }
+.stat .n { font-family: var(--font-display); font-size: 1.5rem; color: var(--color-brass-hi); }
+.stat .l { font-size: 0.72rem; color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.1em; }
+
+/* ══════════════════ collapsed tray panel ══════════════════ */
+.tray { display: flex; flex-direction: column; height: 100%; }
+.tray-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--color-line); }
+.tray-body { flex: 1; overflow-y: auto; padding: 0.6rem 0.9rem; }
+.tray-foot { display: flex; gap: 0.5rem; padding: 0.6rem 0.9rem; border-top: 1px solid var(--color-line); }
+.sync-line { display: flex; align-items: center; gap: 0.55rem; padding: 0.4rem 0; font-size: 0.88rem; }
+.sync-line .name { flex: 1; }
+.sync-line .count { font-family: var(--font-mono); color: var(--color-ink-muted); font-size: 0.8rem; }
+
+/* misc */
+.banner { padding: 0.8rem 1rem; border-left: 3px solid var(--color-spark); background: var(--accent-soft); border-radius: 8px; margin-bottom: 1rem; }
+.err { color: var(--color-danger); font-size: 0.85rem; }
+.ok { color: var(--color-goblin); font-size: 0.85rem; }
+.center-screen { height: 100%; display: grid; place-items: center; padding: 2rem; }
+.setup { width: 100%; max-width: 460px; }
+.step-dots { display: flex; gap: 0.4rem; justify-content: center; margin-bottom: 1.2rem; }
+.step-dots i { width: 8px; height: 8px; border-radius: 999px; background: var(--color-line); }
+.step-dots i.on { background: var(--color-spark); }
+.list-reset { list-style: none; margin: 0; padding: 0; }
+.check { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0; cursor: pointer; }
+.check input { width: auto; }
+.badge-offline { color: var(--color-spark); font-size: 0.72rem; }
+.toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--color-line); border-top-color: var(--color-brass-hi); border-radius: 999px; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

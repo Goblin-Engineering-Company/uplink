@@ -1,0 +1,59 @@
+[package]
+name = "gec-uplink"
+version = "0.2.0"
+description = "GEC Uplink — the cross-platform desktop companion (addon delivery + data sync)"
+authors = ["Goblin Engineering Company"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+# Tauri v2 keeps the app in a lib so mobile targets can reuse it; the desktop
+# binary is a thin main.rs that calls run().
+name = "gec_uplink_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# Self-update: the updater downloads/verifies/installs a signed release; the
+# process plugin's relaunch() restarts the app once the new version is staged.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
+# Launch-at-login (macOS LaunchAgent / Windows registry / Linux autostart entry).
+# The login item is registered WITH a `--hidden` arg so login launches are quiet.
+tauri-plugin-autostart = "2"
+# self-update endpoint construction (Url) + local time-of-day for the daily
+# auto-update schedule.
+url = "2"
+chrono = { version = "0.4", features = ["clock"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# `gethostname` syscall for the default install label (env vars don't carry the
+# hostname in GUI apps). Already in the tree transitively; pinning it direct.
+libc = "0.2"
+
+# HTTP to the GEC server + GitHub release bytes. rustls to avoid an OpenSSL
+# system dependency; gzip for the ingest request/response path (Phase 2).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+
+# Sandboxed Lua (vendored 5.1, no stdlib/io) to evaluate WoW SavedVariables — the
+# files are full Lua data literals; a hand-rolled grammar rots (spec §2). Parsing
+# runs off the async executor (spawn_blocking); the Lua state lives entirely in
+# that one thread, so its !Send-ness never crosses an await.
+mlua = { version = "0.10", features = ["lua51", "vendored"] }
+
+zip = { version = "2", default-features = false, features = ["deflate"] }
+uuid = { version = "1", features = ["v4"] }
+flate2 = "1"
+
+[features]
+# by default Tauri expects the custom-protocol feature for release builds.
+custom-protocol = ["tauri/custom-protocol"]

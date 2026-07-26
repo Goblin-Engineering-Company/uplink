@@ -1,0 +1,11 @@
+# deps / build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# generated icon working file (the fanned-out set in src-tauri/icons IS committed)
+app-icon.png
+
+# os
+.DS_Store

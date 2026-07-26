@@ -1,0 +1,192 @@
+/* ───────────────────────── GEC Uplink theme engine ─────────────────────────
+   Ported verbatim (token-for-token) from the website's app/globals.css so the
+   desktop app matches the site exactly. The website uses Tailwind v4 `@theme`;
+   here the same tokens are plain CSS custom properties on :root, with each
+   alternate theme a single override block on html[data-theme="…"].
+
+   ➜ ADDING A NEW THEME = ADDING ONE `html[data-theme="myname"] { … }` BLOCK
+     below and one entry in THEMES in src/lib/themes.ts. Nothing else.
+
+   Every color the UI uses MUST flow through one of these variables — no
+   hardcoded hex anywhere in components.
+
+   Shipped themes:
+     workshop  — brass & navy machine hall (default, the brand direction)
+     blueprint — drafting-table: steel blues, cyan ink, bright grid
+     parchment — light ledger: warm paper, dark ink, ember accents
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── theme: workshop (default) ── */
+:root {
+  --color-ink: #ede6d6;
+  --color-ink-muted: #a9a294;
+  --color-ink-faint: #6f6a5e;
+  --color-night: #0b111a;
+  --color-deep: #0f1620;
+  --color-deep-2: #141c28;
+  --color-panel: #1e2735;
+  --color-panel-2: #232e3f;
+  --color-line: #2c3648;
+  --color-brass: #b07a33;
+  --color-brass-hi: #e8c679;
+  --color-spark: #f28c28;
+  --color-spark-hi: #ff9d3d;
+  --color-goblin: #7cb83a;
+  --color-danger: #d05b4c;
+
+  /* composite pieces (gradients, glows, frames) — themeable as a set */
+  --glow-a: rgba(232, 198, 121, 0.07);
+  --glow-b: rgba(242, 140, 40, 0.04);
+  --grid-line: rgba(44, 54, 72, 0.22);
+  --frame-1: #8a5f28;
+  --frame-2: #e8c679;
+  --frame-3: #6b4a1f;
+  --frame-4: #c9a054;
+  --frame-in: #223047;
+  --metal-1: #f4dda2;
+  --metal-2: #a5762f;
+  --metal-3: #5c4116;
+  --metal-border: #6b4a1f;
+  --metal-ink: #2a1c08;
+  --brasstext-1: #f2d894;
+  --brasstext-2: #c99a45;
+  --brasstext-3: #9a6f2c;
+  --cta-1: #ff9d3d;
+  --cta-2: #f28c28;
+  --cta-3: #d97417;
+  --cta-border: #b35f10;
+  --cta-ink: #1a1206;
+  --cta-glow: rgba(242, 140, 40, 0.25);
+  --cta-glow-hover: rgba(242, 140, 40, 0.4);
+  --cta-sheen: rgba(255, 235, 200, 0.55);
+  --rule-soft: #7c5a26;
+  --rule-hard: #b07a33;
+  --meter-1: #b07a33;
+  --meter-2: #f28c28;
+  --meter-3: #ffb45e;
+  --meter-glow: rgba(242, 140, 40, 0.5);
+  --meter-bg: #101722;
+  --accent-soft: rgba(176, 122, 51, 0.08);
+  --accent-soft-hover: rgba(176, 122, 51, 0.18);
+  --scroll-thumb: #3a4356;
+  --card-shadow: rgba(0, 0, 0, 0.35);
+
+  /* fonts — display=Cinzel-like, sans=Inter, mono=IBM Plex Mono, system fallbacks */
+  --font-display: "Cinzel", "Playfair Display", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, "Menlo", monospace;
+
+  /* per-addon accent colors (spec §4.1) — shared across themes so the tray
+     panel and accordion dots read consistently everywhere */
+  --addon-sbf: #4f93b8;      /* SBF   = blue   */
+  --addon-haul: #e8c679;     /* Haul  = gold   */
+  --addon-megaphone: #a879d6;/* Megaphone = purple */
+  --addon-recall: #7cb83a;   /* Recall = green */
+  --addon-default: #a9a294;  /* anything else  */
+}
+
+/* ── theme: blueprint (drafting table) ── */
+html[data-theme="blueprint"] {
+  --color-ink: #e4eef7;
+  --color-ink-muted: #93a7ba;
+  --color-ink-faint: #5d7186;
+  --color-night: #071018;
+  --color-deep: #0a1622;
+  --color-deep-2: #0d1c2c;
+  --color-panel: #122435;
+  --color-panel-2: #16293d;
+  --color-line: #234158;
+  --color-brass: #4f93b8;
+  --color-brass-hi: #9fd4ef;
+  --color-spark: #2fb3d4;
+  --color-spark-hi: #56cfee;
+  --color-goblin: #7cc76a;
+  --glow-a: rgba(86, 207, 238, 0.06);
+  --glow-b: rgba(47, 179, 212, 0.05);
+  --grid-line: rgba(79, 147, 184, 0.16);
+  --frame-1: #2c5a76;
+  --frame-2: #9fd4ef;
+  --frame-3: #1e455c;
+  --frame-4: #6cb4d6;
+  --frame-in: #0f2436;
+  --metal-1: #d6ecf8;
+  --metal-2: #4f93b8;
+  --metal-3: #1e455c;
+  --metal-border: #1e455c;
+  --metal-ink: #071722;
+  --brasstext-1: #c8e9fa;
+  --brasstext-2: #6cb4d6;
+  --brasstext-3: #35708f;
+  --cta-1: #56cfee;
+  --cta-2: #2fb3d4;
+  --cta-3: #1d8faa;
+  --cta-border: #16708a;
+  --cta-ink: #04202a;
+  --cta-glow: rgba(47, 179, 212, 0.25);
+  --cta-glow-hover: rgba(47, 179, 212, 0.4);
+  --cta-sheen: rgba(220, 245, 255, 0.55);
+  --rule-soft: #2c5a76;
+  --rule-hard: #4f93b8;
+  --meter-1: #35708f;
+  --meter-2: #2fb3d4;
+  --meter-3: #7cdcf3;
+  --meter-glow: rgba(47, 179, 212, 0.5);
+  --meter-bg: #0a1a28;
+  --accent-soft: rgba(79, 147, 184, 0.1);
+  --accent-soft-hover: rgba(79, 147, 184, 0.22);
+  --scroll-thumb: #2c4a62;
+}
+
+/* ── theme: parchment (light ledger) ── */
+html[data-theme="parchment"] {
+  --color-ink: #2c2416;
+  --color-ink-muted: #6d5f46;
+  --color-ink-faint: #98876a;
+  --color-night: #e8dcc0;
+  --color-deep: #f1e8d2;
+  --color-deep-2: #ece1c6;
+  --color-panel: #f9f3e4;
+  --color-panel-2: #f4ecd8;
+  --color-line: #d4c5a2;
+  --color-brass: #8a5f28;
+  --color-brass-hi: #7c4a12;
+  --color-spark: #c9660f;
+  --color-spark-hi: #a95208;
+  --color-goblin: #4f7a1c;
+  --color-danger: #b23d2e;
+  --glow-a: rgba(176, 122, 51, 0.1);
+  --glow-b: rgba(201, 102, 15, 0.06);
+  --grid-line: rgba(138, 95, 40, 0.1);
+  --frame-1: #a5762f;
+  --frame-2: #e3c27c;
+  --frame-3: #8a5f28;
+  --frame-4: #caa055;
+  --frame-in: #f6efdc;
+  --metal-1: #f6e2ac;
+  --metal-2: #c99a45;
+  --metal-3: #8a5f28;
+  --metal-border: #a5762f;
+  --metal-ink: #2a1c08;
+  --brasstext-1: #8a5f28;
+  --brasstext-2: #6b4a1f;
+  --brasstext-3: #4d350f;
+  --cta-1: #e6821f;
+  --cta-2: #c9660f;
+  --cta-3: #a95208;
+  --cta-border: #8a4406;
+  --cta-ink: #fff6e6;
+  --cta-glow: rgba(201, 102, 15, 0.25);
+  --cta-glow-hover: rgba(201, 102, 15, 0.4);
+  --cta-sheen: rgba(255, 214, 160, 0.5);
+  --rule-soft: #b08d55;
+  --rule-hard: #8a5f28;
+  --meter-1: #a5762f;
+  --meter-2: #c9660f;
+  --meter-3: #e6a052;
+  --meter-glow: rgba(201, 102, 15, 0.35);
+  --meter-bg: #e5d8b8;
+  --accent-soft: rgba(138, 95, 40, 0.08);
+  --accent-soft-hover: rgba(138, 95, 40, 0.16);
+  --scroll-thumb: #c4b28c;
+  --card-shadow: rgba(90, 70, 30, 0.18);
+}

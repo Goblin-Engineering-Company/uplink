@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.goblinengineering.uplink</id>
+  <name>GEC Uplink</name>
+  <summary>GEC addon delivery + data sync companion</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="co.goblineng">
+    <name>Goblin Engineering Company</name>
+  </developer>
+  <description>
+    <p>
+      GEC Uplink installs and updates Goblin Engineering Company World of Warcraft
+      addons and syncs their data. On the Steam Deck it manages addons in a Proton
+      WoW prefix via full filesystem access.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.goblinengineering.uplink.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.2.0-dev" date="2026-07-16" />
+  </releases>
+</component>

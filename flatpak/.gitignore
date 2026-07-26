@@ -1,0 +1,6 @@
+deck-diag-output.txt
+gec-uplink.deb
+build-dir/
+.flatpak-builder/
+*.flatpak
+shared-modules/

@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core capabilities for the main and tray windows.",
+  "windows": ["main", "tray"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-create-webview-window",
+    "dialog:default",
+    "dialog:allow-open",
+    "opener:default",
+    "opener:allow-open-url",
+    "updater:default",
+    "process:default",
+    "process:allow-restart",
+    "notification:default",
+    "notification:allow-notify",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
+  ]
+}

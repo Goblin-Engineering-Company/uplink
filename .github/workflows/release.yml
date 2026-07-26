@@ -1,0 +1,169 @@
+# GEC Uplink — cross-platform release + updater build.
+#
+# Trigger: push a tag matching v*  (e.g.  git tag v0.2.0 && git push origin v0.2.0).
+# Result: one GitHub Release for that tag with the per-OS installers attached AND
+# the updater manifest (latest.json), which the app reads to self-update.
+#
+# ───────────────────────────────────────────────────────────────────────────────
+# ONE-TIME HUMAN SETUP (do these once, before the first tag push):
+#
+#  1. Create the PUBLIC repo  goblin-engineering-company/uplink  and push the
+#     source there (use scripts/publish-uplink.sh to mirror the clean source).
+#
+#  2. Generate the updater signing keypair (locally, needs the Tauri CLI):
+#         cd uplink && npx tauri signer generate -w ~/.gec/uplink-updater.key
+#     It prints a PUBLIC key and writes the PRIVATE key file (with a password).
+#
+#  3. Put the PUBLIC key into src-tauri/tauri.conf.json → plugins.updater.pubkey
+#     (replace the REPLACE_ME_WITH_TAURI_SIGNER_PUBLIC_KEY placeholder), commit,
+#     and push. The public key ships inside the app; that is expected + safe.
+#
+#  4. Add the PRIVATE key + its password as repo secrets (Settings → Secrets and
+#     variables → Actions) so CI can sign each build:
+#         TAURI_SIGNING_PRIVATE_KEY           = contents of ~/.gec/uplink-updater.key
+#         TAURI_SIGNING_PRIVATE_KEY_PASSWORD  = the password you chose in step 2
+#
+# (Code-signing / notarization is intentionally NOT set up yet. When you add it,
+#  it plugs in on the macOS + Windows jobs via extra tauri-action env vars —
+#  APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD for
+#  macOS notarization, and the Windows cert secrets — see the tauri-action docs.
+#  Until then, users get an "unidentified developer" gate on first launch.)
+# ───────────────────────────────────────────────────────────────────────────────
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Needed so tauri-action can create/update the GitHub Release for the tag.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: one universal binary (Apple Silicon + Intel in a single .app/.dmg).
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS universal build needs both arch targets.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Linux-only system deps for the webview + bundling (webkit2gtk, appindicator, etc.).
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build + release (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — sign the release + emit the .sig files latest.json points at.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # Reuse the pushed tag; the release is created/updated for it.
+          tagName: ${{ github.ref_name }}
+          releaseName: "GEC Uplink ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download GEC Uplink for your platform. Installed copies update themselves."
+          releaseDraft: false
+          # A tag with any suffix (v0.4.0-pre.1, v0.4.0-dev.1) is a prerelease;
+          # a plain tag (v0.4.0) is a public release. The server manifest gating
+          # controls access per channel — this just marks the GitHub release type.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # createUpdaterArtifacts (in tauri.conf.json) makes tauri-action also
+          # generate + upload latest.json — the manifest the app's updater reads.
+          args: ${{ matrix.args }}
+
+      # Hand the Linux .deb to the Flatpak job below (only ubuntu builds a .deb).
+      # Skipped unless the Deck build is opted in (repo variable BUILD_FLATPAK).
+      - name: Upload .deb for the Flatpak job
+        if: matrix.platform == 'ubuntu-22.04' && vars.BUILD_FLATPAK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: uplink-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+  # ── 4th target: Steam Deck / Linux Flatpak (OPT-IN) ──
+  # Packages the .deb (clean binary) into the GNOME 46 runtime (webkit2gtk 2.44 —
+  # the version that renders on SteamOS). Runs in the flatpak-github-actions image
+  # which already has the GNOME 46 Platform + SDK. Produces gec-uplink.flatpak and
+  # exposes it ONLY as a workflow artifact (Actions run page) — deliberately NOT
+  # attached to the GitHub release, so a gated build's release/tag can be stripped
+  # cleanly with no re-created husk. Pull the artifact for the Deck (deck-diag.sh).
+  # Opt in per build cycle by setting the repo variable BUILD_FLATPAK=true
+  # (Settings → Secrets and variables → Actions → Variables, or
+  #  gh variable set BUILD_FLATPAK --body true).
+  flatpak:
+    if: vars.BUILD_FLATPAK == 'true'
+    needs: build
+    runs-on: ubuntu-22.04
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:gnome-46
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the built .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: uplink-deb
+          path: deb-in
+
+      - name: Stage the .deb next to the manifest
+        run: cp deb-in/*.deb flatpak/gec-uplink.deb
+
+      - name: Fetch shared-modules (libappindicator for the system tray)
+        run: git clone --depth 1 https://github.com/flathub/shared-modules.git flatpak/shared-modules
+
+      - name: Build the Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: gec-uplink.flatpak
+          manifest-path: flatpak/com.goblinengineering.uplink.yml
+          cache-key: flatpak-${{ github.sha }}
+
+      # Expose the Deck build ONLY as a workflow artifact (downloadable from the
+      # Actions run page). It is intentionally NOT attached to the GitHub release:
+      # the slow flatpak lands after the gated strip has deleted the release, and
+      # re-attaching would re-create an orphan husk on the public repo. deck-diag.sh
+      # installs from this downloaded artifact.
+      - name: Upload .flatpak as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gec-uplink-flatpak
+          path: gec-uplink.flatpak
