@@ -1,7 +1,7 @@
 {
   "name": "gec-uplink",
   "private": true,
-  "version": "0.2.2-dev.7",
+  "version": "0.2.2-dev.8",
   "type": "module",
   "description": "GEC Uplink — the cross-platform desktop companion (addon delivery + data sync)",
   "scripts": {

@@ -1,6 +1,6 @@
 [package]
 name = "gec-uplink"
-version = "0.2.2-dev.7"
+version = "0.2.2-dev.8"
 description = "GEC Uplink — the cross-platform desktop companion (addon delivery + data sync)"
 authors = ["Goblin Engineering Company"]
 edition = "2021"

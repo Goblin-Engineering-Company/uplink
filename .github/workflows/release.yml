@@ -82,12 +82,19 @@ jobs:
           if [ -n "$id" ]; then
             echo "Reusing existing release $id for $TAG"
           else
-            args=(--draft --title "GEC Uplink $TAG" --notes "See the assets below to download GEC Uplink for your platform. Installed copies update themselves.")
-            if [ "$IS_PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-            gh release create "$TAG" "${args[@]}"
-            id="$(gh api "repos/$GH_REPO/releases" --paginate \
-                    --jq "map(select(.tag_name == \"$TAG\")) | first | .id")"
+            # Create through the API so the id comes back in the response. Listing
+            # releases right after `gh release create` can miss the new draft
+            # (v0.2.2-dev.7, 2026-11-12: empty id -> tauri-action skipped every
+            # upload -> an empty release got published).
+            id="$(gh api -X POST "repos/$GH_REPO/releases" \
+                    -f tag_name="$TAG" -f name="GEC Uplink $TAG" \
+                    -f body="See the assets below to download GEC Uplink for your platform. Installed copies update themselves." \
+                    -F draft=true -F prerelease="$IS_PRERELEASE" --jq .id)"
             echo "Created draft release $id for $TAG"
+          fi
+          if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+            echo "::error::no release id for $TAG (got '$id'); refusing to build into nothing"
+            exit 1
           fi
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
 
@@ -238,6 +245,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Never publish an empty release: with no assets the mirror registers
+          # nothing and the empty husk stays public (v0.2.2-dev.7).
+          n="$(gh api "repos/$GH_REPO/releases/${{ needs.create-release.outputs.release_id }}/assets" --jq length)"
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error::draft for $TAG has no assets; not publishing"
+            exit 1
+          fi
           gh release edit "$TAG" --draft=false
           echo "Published $TAG — the mirror webhook now sees the full asset set."
 

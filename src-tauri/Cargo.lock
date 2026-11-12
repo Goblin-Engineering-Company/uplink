@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "gec-uplink"
-version = "0.2.2-dev.7"
+version = "0.2.2-dev.8"
 dependencies = [
  "chrono",
  "flate2",

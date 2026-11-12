@@ -18,6 +18,6 @@
   <launchable type="desktop-id">com.goblinengineering.uplink.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
-    <release version="0.2.2-dev.7" date="2026-11-12" />
+    <release version="0.2.2-dev.8" date="2026-11-12" />
   </releases>
 </component>
