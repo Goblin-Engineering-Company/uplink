@@ -90,14 +90,33 @@ impl Catalog {
     }
 }
 
-// ── pairing (POST /api/devices/pair) ──
+// ── QR pairing (spec 2026-07-26): the app STARTS the session (POST
+// /api/devices/pair/start), any signed-in browser approves it at /pair, and
+// the poll (POST /api/devices/pair/poll) delivers the token exactly once. ──
 #[derive(Debug, Serialize)]
-pub struct PairRequest {
-    pub code: String,
+pub struct PairStartRequest {
+    /// Suggested device name (machine hostname) — editable on the approval page.
     pub name: String,
     pub platform: String,
     pub app: String,
     pub app_version: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairStartResponse {
+    pub code: String,
+    /// Poll secret — never leaves this machine; required to collect the token.
+    pub secret: String,
+    #[serde(default)]
+    pub expires_in: Option<u64>,
+    #[serde(default)]
+    pub poll_interval: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairPollRequest {
+    pub code: String,
+    pub secret: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,14 +129,19 @@ pub struct PairAccount {
     pub channels: Vec<String>,
 }
 
+/// Poll outcome: `pending` / `denied` / `expired`, or `approved` carrying the
+/// token + device + account (the old exchange's payload shape).
 #[derive(Debug, Deserialize)]
-pub struct PairResponse {
-    pub token: String,
-    pub device_id: i64,
-    /// The device name as set on the website (present once the server supports it).
+pub struct PairPollResponse {
+    pub status: String,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<i64>,
     #[serde(default)]
     pub name: Option<String>,
-    pub account: PairAccount,
+    #[serde(default)]
+    pub account: Option<PairAccount>,
 }
 
 pub async fn fetch_catalog(base: &str) -> Result<Catalog, String> {

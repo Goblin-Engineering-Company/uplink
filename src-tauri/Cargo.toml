@@ -1,6 +1,6 @@
 [package]
 name = "gec-uplink"
-version = "0.2.1"
+version = "0.2.2-dev.7"
 description = "GEC Uplink — the cross-platform desktop companion (addon delivery + data sync)"
 authors = ["Goblin Engineering Company"]
 edition = "2021"
@@ -30,10 +30,18 @@ tauri-plugin-autostart = "2"
 # self-update endpoint construction (Url) + local time-of-day for the daily
 # auto-update schedule.
 url = "2"
+# SavedVariables instant-capture watcher (Feedwerks §4.1)
+notify = "6"
 chrono = { version = "0.4", features = ["clock"] }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: parse floats exactly. Packed sessions (packed.rs) carry Lua doubles
+# as shortest-round-trip text and must decode to the identical f64; the default fast
+# parser can be one ULP off.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+# The exact f64 → i64 cast mlua uses, so packed numbers take the same Integer/Number
+# shape the unpacked path gives them (packed.rs `lua_number_json`).
+num-traits = "0.2"
 
 # `gethostname` syscall for the default install label (env vars don't carry the
 # hostname in GUI apps). Already in the tree transitively; pinning it direct.

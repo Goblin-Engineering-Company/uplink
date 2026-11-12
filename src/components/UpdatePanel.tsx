@@ -74,7 +74,7 @@ export function UpdatePanel({
           You're using Uplink <span className="tabular">{version || "…"}</span>.
         </p>
         <p className="faint" style={{ margin: "0.5rem 0 0", fontSize: "0.85rem" }}>
-          Updates on the Steam Deck are managed by Flatpak — run <code>flatpak update</code>, or enable automatic updates in Discover.
+          Flatpak handles updates on the Steam Deck. Run <code>flatpak update</code>, or turn on automatic updates in Discover.
         </p>
       </div>
     );
@@ -121,7 +121,7 @@ export function UpdatePanel({
       {phase.k === "uptodate" && <div className="ok" style={{ marginTop: "0.5rem" }}>You're up to date.</div>}
       {phase.k === "revoked" && (
         <div className="err" style={{ marginTop: "0.5rem" }}>
-          Access to the {phase.was} channel was removed — switched to Public.
+          Your access to the {phase.was} channel ended. You're on Public now.
         </div>
       )}
       {phase.k === "available" && (

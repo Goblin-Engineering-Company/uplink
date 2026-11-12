@@ -5,13 +5,17 @@ import { Select } from "../components/Select";
 import type { Catalog } from "../lib/types";
 import { useEffect } from "react";
 import { UpdatePanel } from "../components/UpdatePanel";
+import { PairSession } from "../components/PairSession";
 
 export function Settings({ ctx }: { ctx: Ctx }) {
   const { config } = ctx;
   const [baseUrl, setBaseUrl] = useState(config.base_url);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [pairCode, setPairCode] = useState("");
+  // Re-pair entry point: after an unpair the account card shows a "Pair this
+  // device" button; clicking it mounts the same QR session UI as first-run
+  // setup (PairSession starts a fresh session the moment it mounts).
+  const [pairing, setPairing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Launch-at-login state is OS-owned (not in config) — fetch it live on mount.
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
@@ -32,12 +36,6 @@ export function Settings({ ctx }: { ctx: Ctx }) {
     setCatalog(null); api.fetchCatalog().then(setCatalog).catch(() => {});
   }
 
-  async function pair() {
-    setErr(null);
-    try { await api.pairDevice(pairCode.trim().toUpperCase()); setPairCode(""); await ctx.reload(); }
-    catch (e) { setErr(String(e)); }
-  }
-
   async function browseAdd() {
     const p = await api.browseFolder();
     if (p && typeof p === "string") { await api.addInstall(p, ""); await ctx.reload(); }
@@ -55,23 +53,27 @@ export function Settings({ ctx }: { ctx: Ctx }) {
       {/* ── Account / devices ── */}
       <div className="panel card">
         <h3>Account</h3>
+        {err && <div className="err">{err}</div>}
         {config.paired && config.account ? (
           <div className="row between">
             <div>
               <div><b>{config.account.handle}</b> <span className="chip chip-brass">{config.account.role}</span> {config.account.tier && <span className="chip">{config.account.tier}</span>}</div>
               <div className="faint" style={{ fontSize: "0.8rem", marginTop: 4 }}>Channels: {config.account.channels.join(", ")}</div>
             </div>
-            <button className="btn-ghost btn-sm" onClick={() => api.unpair().then(ctx.reload).catch(() => ctx.reload())}>Unpair device</button>
+            <button className="btn-ghost btn-sm" onClick={() => { setPairing(false); api.unpair().then(ctx.reload).catch(() => ctx.reload()); }}>Unpair device</button>
+          </div>
+        ) : pairing ? (
+          <div className="stack">
+            <PairSession onPaired={async () => { setPairing(false); await ctx.reload(); }} />
+            <div><button className="btn-ghost btn-sm" onClick={() => setPairing(false)}>Cancel</button></div>
           </div>
         ) : (
           <div className="stack">
-            <p className="muted" style={{ margin: 0 }}>Pair with a code from the website (Account → Devices → Add device).</p>
-            <label className="field"><span>Pairing code</span>
-              <input value={pairCode} onChange={(e) => setPairCode(e.target.value)}
-                autoComplete="off" autoCorrect="off" autoCapitalize="characters" spellCheck={false}
-                style={{ textTransform: "uppercase" }} placeholder="GEC-K7M2Q9" /></label>
-            {err && <div className="err">{err}</div>}
-            <div><button className="btn-spark btn-sm" disabled={!pairCode.trim()} onClick={pair}>Pair device</button></div>
+            <p className="muted" style={{ margin: 0 }}>
+              Not paired. Pairing links this device to your account. Scan the QR code with your phone, or
+              approve it in a browser right here. Data sync and member channels stay off until you do.
+            </p>
+            <div><button className="btn-spark btn-sm" onClick={() => setPairing(true)}>Pair this device</button></div>
           </div>
         )}
       </div>
@@ -88,7 +90,7 @@ export function Settings({ ctx }: { ctx: Ctx }) {
           <input type="checkbox" checked={config.start_in_tray} onChange={(e) => api.setStartInTray(e.target.checked).then(ctx.reload).catch(() => ctx.reload())} />
           Start in the menu bar (don't open the window)
         </label>
-        <p className="faint" style={{ margin: "0.2rem 0 0", fontSize: "0.78rem" }}>Launches straight to the menu-bar icon — click it any time to open the window.</p>
+        <p className="faint" style={{ margin: "0.2rem 0 0", fontSize: "0.78rem" }}>Launches straight to the menu-bar icon. Click it any time to open the window.</p>
       </div>
 
       {/* ── Per-install settings ── */}
@@ -143,7 +145,7 @@ export function Settings({ ctx }: { ctx: Ctx }) {
       {/* ── Server ── (base URL only; sync toggles moved to the Data page, redesign §7) */}
       <div className="panel card">
         <h3>Server</h3>
-        <label className="field"><span>Website address <span className="faint">(advanced — leave as is)</span></span>
+        <label className="field"><span>Website address <span className="faint">(advanced, leave as is)</span></span>
           <div className="row"><input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://goblineng.co" />
             <button className="btn-brass btn-sm" onClick={saveBaseUrl}>Save</button></div>
         </label>

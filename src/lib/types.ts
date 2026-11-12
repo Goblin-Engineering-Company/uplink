@@ -43,6 +43,8 @@ export type AppConfig = {
   installs: Install[];
   sync_while_running: boolean;
   sync_interval_secs: number;
+  watch_enabled: boolean;
+  watch_debounce_ms: number;
   sync: StreamState[];
   account_aliases: Record<string, string>;  // real account name → display alias (redesign §4)
   dismissed_broadcast: number | null;
@@ -95,6 +97,24 @@ export type SyncResult = {
   warning?: string | null;
 };
 
+// One recorded sync pass (mirrors synclog.rs::SyncLogEntry). Every pass records one,
+// whatever fired it, so the Data page can show a real log rather than only the return
+// value of the button the user last pressed.
+export type SyncLogEntry = {
+  at: number;                 // unix secs when the pass finished
+  trigger: SyncTrigger;
+  sent: number;               // entries sent across every stream in the pass
+  inserted: number;           // new rows the site stored (duplicates excluded)
+  errors: number;             // how many streams reported an error
+  skipped: string | null;     // set when the WHOLE pass was skipped (not a failure)
+  error: string | null;       // set when the pass itself failed
+  results: SyncResult[];      // per-stream detail; empty on a skipped pass
+};
+
+// What fired a pass. The distinction is the point: the user wants to know whether an
+// upload happened because they asked for it or on its own.
+export type SyncTrigger = "manual" | "instant" | "timed";
+
 export type DetectedInstall = {
   path: string;
   label: string;
@@ -115,7 +135,20 @@ export type CatalogAddon = {
   github_repo: string | null;
   channels: Record<string, ChannelLatest>;
   releases: ReleaseRow[];
+  // WoW flavors this addon supports ("Retail", "Classic", …), matched
+  // case-insensitively against an install's flavor. EMPTY / absent = ALL flavors.
+  // Mirrors catalog.rs::CatalogAddon.flavors — the field existed on the wire and in
+  // Rust but not here, so the UI offered Retail-only addons on Classic installs.
+  flavors?: string[];
 };
+
+// Mirrors catalog.rs::CatalogAddon::supports_flavor. Absent/empty `flavors` is
+// PERMISSIVE (an older catalog imposes no restriction) — same answer Rust gives, so
+// the UI never offers something the backend will refuse, or hides something it allows.
+export function supportsFlavor(addon: { flavors?: string[] }, flavor: string): boolean {
+  const list = addon.flavors ?? [];
+  return list.length === 0 || list.some((f) => f.toLowerCase() === flavor.toLowerCase());
+}
 export type Catalog = {
   schema: string;
   channel_defs: ChannelDef[];
@@ -159,6 +192,15 @@ export type Me = {
   votables: Array<{ number: number; title: string; url: string; votes: number; my_votes?: number; my_boosts?: number }>;
   // spend-encouragement state: the one free vote per cycle + boost credits
   vote_state?: { free_vote_available: boolean; boost_credits: number };
+  // the release race (spec 2026-07-27): voting countdown + "voted in" state —
+  // same snapshot the website RaceClock renders
+  race?: {
+    label: string;
+    votes_close_at: string | null;
+    votes_closed: boolean;
+    votes_cast: number;
+    building: { number: number; title: string; addon: string; eta_date: string | null; eta_note: string | null } | null;
+  };
   whats_new: string | null;
   // Upload-freeze / service-denial state (spec §7b). Present + `uploads:"frozen"`
   // while the server is refusing ingest globally; `message` explains WHY.
@@ -178,4 +220,20 @@ export type UpdateItem = {
   latest: string;
   url: string;
   channel: string;
+  missing: boolean;   // nothing on disk yet — a first install, not a version bump
 };
+
+// ── QR pairing (spec 2026-07-26) ──
+export type PairSessionInfo = {
+  code: string;
+  secret: string;      // poll credential — never shown, never in the QR
+  approve_url: string; // what the QR encodes / the approval-page button opens
+  expires_in: number;  // seconds
+  poll_interval: number; // seconds
+};
+
+export type PairPollOutcome =
+  | { status: "pending" }
+  | { status: "denied" }
+  | { status: "expired" }
+  | { status: "approved"; account: Account };

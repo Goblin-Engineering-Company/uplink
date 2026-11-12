@@ -170,9 +170,57 @@ pub async fn install_self_update(app: AppHandle, state: State<'_, AppState>) -> 
             )
             .await
             .map_err(|e| e.to_string())?;
-        app.restart(); // diverges (!); never returns
+        relaunch(&app);
     }
     Ok(())
+}
+
+/// Start the freshly installed build, then quit this one.
+///
+/// macOS: Tauri's `app.restart()` execs the new binary as a CHILD of this process,
+/// then exits. That child is still in this app's launchd job, and Gatekeeper is
+/// still scanning it (an ad-hoc dev build takes a network notarization check) when
+/// we exit. launchd tears the job down, the scan gets interrupted, and the kernel
+/// logs `ASP: Security policy would not allow process` — the app quits and never
+/// comes back (seen 2026-11-11 updating to 0.2.2-dev.5). Asking LaunchServices to
+/// start it (`open -n`) makes the new instance its own job, so our exit can't take
+/// it down. We wait for `open` to return (the launch request is handed off by then)
+/// before exiting. Any failure falls back to `app.restart()`.
+fn relaunch(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = macos_bundle_path() {
+        // same args the running app got (e.g. `--hidden` from a login launch), the
+        // way `app.restart()` passes them
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        let mut cmd = std::process::Command::new("/usr/bin/open");
+        cmd.arg("-n").arg(&bundle); // -n: a NEW instance, not "activate the running one"
+        if !args.is_empty() {
+            cmd.arg("--args").args(&args);
+        }
+        match cmd.status() {
+            Ok(s) if s.success() => {
+                app.exit(0);
+                return;
+            }
+            Ok(s) => eprintln!("[selfupdate] open -n {bundle:?} exited {s}; falling back to restart"),
+            Err(e) => eprintln!("[selfupdate] open -n {bundle:?} failed: {e}; falling back to restart"),
+        }
+    }
+    app.restart(); // diverges (!); never returns
+}
+
+/// `/…/GEC Uplink.app` from the running binary `/…/GEC Uplink.app/Contents/MacOS/<exe>`,
+/// or `None` when we aren't running from a bundle (e.g. `cargo run`).
+#[cfg(target_os = "macos")]
+fn macos_bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let ok = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app";
+    ok.then(|| bundle.to_path_buf())
 }
 
 /// Fire a best-effort native OS notification (never raises).
@@ -208,6 +256,10 @@ pub async fn run_auto_update_pass(app: &AppHandle) {
             let cfg = state.config.lock().unwrap();
             crate::commands::compute_updates(&cfg, &cat)
                 .into_iter()
+                // A first install is never done unattended: the SCHEDULED pass stays
+                // upgrade-only (same doctrine as never surprise-downgrading), so an
+                // enabled addon that isn't on disk waits for a user-initiated bulk run.
+                .filter(|u| !u.missing)
                 // keep only updates whose per-addon auto_update flag is on
                 .filter(|u| {
                     cfg.installs

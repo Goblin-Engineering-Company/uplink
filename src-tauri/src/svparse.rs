@@ -83,6 +83,12 @@ pub struct SvExport {
     /// (records then carry no `seq`, and the seq-slice sends nothing until the addon
     /// ships MINOR 25 — the coordinated rollout, by design).
     pub stream_meta: HashMap<String, StreamMeta>,
+    /// What reading the packed copy found (`packed.rs`). `None` when the file has no
+    /// `packed` / `_format.packed` (every file before GECStore MINOR 30). In shadow
+    /// mode `streams` is the plain stream, untouched; in primary mode the packed
+    /// streams in `streams` are already merged (and a file with any pack problem is
+    /// an `Err` instead).
+    pub pack: Option<crate::packed::PackReport>,
 }
 
 /// Read + parse an SV file, returning the named export global's view.
@@ -185,22 +191,21 @@ pub fn parse_export_str(src: &[u8], global: &str) -> Result<SvExport, String> {
     }
 
     // ── streams: entries verbatim, `schema` separated ──
-    if let Ok(streams) = root.get::<Table>("streams") {
-        // schema defaults live in `_format.streams.<name>.schema`
-        let schema_defaults: HashMap<String, i64> = root
-            .get::<Table>("_format")
-            .and_then(|f| f.get::<Table>("streams"))
-            .map(|s| {
-                let mut m = HashMap::new();
-                for pair in s.pairs::<String, Table>().flatten() {
-                    if let Ok(sc) = pair.1.get::<i64>("schema") {
-                        m.insert(pair.0, sc);
-                    }
+    // schema defaults live in `_format.streams.<name>.schema`
+    let schema_defaults: HashMap<String, i64> = root
+        .get::<Table>("_format")
+        .and_then(|f| f.get::<Table>("streams"))
+        .map(|s| {
+            let mut m = HashMap::new();
+            for pair in s.pairs::<String, Table>().flatten() {
+                if let Ok(sc) = pair.1.get::<i64>("schema") {
+                    m.insert(pair.0, sc);
                 }
-                m
-            })
-            .unwrap_or_default();
-
+            }
+            m
+        })
+        .unwrap_or_default();
+    if let Ok(streams) = root.get::<Table>("streams") {
         for pair in streams.pairs::<Value, Value>() {
             let Ok((k, v)) = pair else { continue };
             let name = key_to_string(&k);
@@ -222,6 +227,24 @@ pub fn parse_export_str(src: &[u8], global: &str) -> Result<SvExport, String> {
             let seq = value_as_int(&m.get::<Value>("seq").unwrap_or(Value::Nil)).unwrap_or(0);
             let base = value_as_int(&m.get::<Value>("base").unwrap_or(Value::Nil)).unwrap_or(1);
             out.stream_meta.insert(name, StreamMeta { seq, base });
+        }
+    }
+
+    // ── packed sessions (GECStore MINOR 30, packed contract) ──
+    // Shadow: verify only, the stream above is what uploads. Primary: the packed
+    // streams are merged back in, or the file is refused (an `Err`, skip-and-retry).
+    let open_sid: Option<String> = root
+        .get::<Table>("_open")
+        .ok()
+        .and_then(|o| o.get::<Value>("sid").ok())
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        });
+    out.pack = crate::packed::apply(&root, &out.format, open_sid.as_deref(), &schema_defaults, &mut out.streams)?;
+    if let Some(r) = &out.pack {
+        if !r.is_clean() {
+            eprintln!("[svparse][packed] {global}: {}", r.summary());
         }
     }
 
@@ -247,14 +270,14 @@ fn parse_stream(t: &Table, schema_default: i64) -> Result<ParsedStream, String> 
 /// all other tables become objects (integer keys stringified). Scalars map
 /// naturally; non-finite floats and function/userdata values (never present in SV
 /// data) degrade to `null`.
-fn lua_to_json(v: Value, depth: usize) -> Result<Json, String> {
+pub(crate) fn lua_to_json(v: Value, depth: usize) -> Result<Json, String> {
     if depth > MAX_DEPTH {
         return Err(format!("table nested deeper than {MAX_DEPTH} — refusing"));
     }
     Ok(match v {
         Value::Nil => Json::Null,
         Value::Boolean(b) => Json::Bool(b),
-        Value::Integer(i) => Json::Number((i as i64).into()),
+        Value::Integer(i) => Json::Number(i.into()),
         Value::Number(n) => Number::from_f64(n).map(Json::Number).unwrap_or(Json::Null),
         Value::String(s) => Json::String(s.to_string_lossy().to_string()),
         Value::Table(t) => table_to_json(&t, depth)?,
@@ -313,7 +336,7 @@ fn table_to_json(t: &Table, depth: usize) -> Result<Json, String> {
 /// An integer key value, if this Lua value is an integer (or an integral float).
 fn key_as_int(v: &Value) -> Option<i64> {
     match v {
-        Value::Integer(i) => Some(*i as i64),
+        Value::Integer(i) => Some(*i),
         Value::Number(n) if n.is_finite() && n.fract() == 0.0 => Some(*n as i64),
         _ => None,
     }
@@ -322,7 +345,7 @@ fn key_as_int(v: &Value) -> Option<i64> {
 /// A scalar as `i64` (for `schema` fields written as either int or float).
 fn value_as_int(v: &Value) -> Option<i64> {
     match v {
-        Value::Integer(i) => Some(*i as i64),
+        Value::Integer(i) => Some(*i),
         Value::Number(n) if n.is_finite() => Some(*n as i64),
         _ => None,
     }

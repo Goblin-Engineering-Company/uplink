@@ -17,6 +17,10 @@ pub struct DetectedInstall {
 /// The WoW flavor subfolders. Order = display preference.
 const FLAVORS: &[(&str, &str)] = &[
     ("_retail_", "Retail"),
+    // WoW: Forever (launched 2026-11-04): its own client folder, retail API on
+    // interface 16001. Without this row it was never auto-detected and showed as
+    // "Unknown" (the wire token `forever` already passed through).
+    ("_forever_", "Forever"),
     ("_ptr_", "PTR"),
     ("_xptr_", "PTR"),
     ("_beta_", "Beta"),
@@ -26,15 +30,31 @@ const FLAVORS: &[(&str, &str)] = &[
     ("_classic_era_ptr_", "Classic Era PTR"),
 ];
 
+/// Display name for a wire flavor TOKEN (`flavor_token_from_path`'s output), e.g.
+/// `classic_era` → "Classic Era". The token is matched EXACTLY against `FLAVORS`
+/// (whose keys are the same strings with the underscores trimmed), so no token can
+/// be swallowed by a shorter one that happens to be its prefix. An unrecognized
+/// token — a future `_classic_wotlk_` — has no display name yet, so it renders as
+/// "Unknown"; the WIRE still forwards it verbatim (see `flavor_token_from_path`).
+pub fn display_for_flavor_token(token: &str) -> String {
+    FLAVORS
+        .iter()
+        .find(|(seg, _)| seg.trim_matches('_') == token)
+        .map(|(_, name)| name.to_string())
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
 /// Derive the DISPLAY flavor from any path containing a `_flavor_` segment.
+///
+/// Resolves the flavor from the `_flavor_` PATH COMPONENT (via the same scan the wire
+/// token uses), never by substring. The old `lower.contains(seg)` scan mis-derived
+/// three of the eight flavors because the segments are prefixes of each other and the
+/// short ones are listed first: `_classic_era_` contains `_classic_` and both
+/// `_classic_ptr_` / `_classic_era_ptr_` contain `_ptr_`, so the first arm won.
+/// `Install.flavor` feeds `CatalogAddon::supports_flavor`, so a wrong answer here gates
+/// an addon against the wrong client.
 pub fn flavor_from_path(path: &str) -> String {
-    let lower = path.to_lowercase();
-    for (seg, name) in FLAVORS {
-        if lower.contains(seg) {
-            return name.to_string();
-        }
-    }
-    "Unknown".to_string()
+    display_for_flavor_token(&flavor_token_from_path(path))
 }
 
 /// The pass-through WIRE token for the ingest envelope (data contract v5, envelope
@@ -297,4 +317,90 @@ fn canon_key(p: &str) -> String {
         .map(|r| r.to_string_lossy().to_string())
         .unwrap_or_else(|_| p.to_string());
     norm(&real)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every flavor directory in `FLAVORS`, each resolving to its OWN display name.
+    /// Three of these (`_classic_era_`, `_classic_ptr_`, `_classic_era_ptr_`) used to
+    /// resolve to "Classic" / "PTR" / "PTR" under the old substring scan (audit H2).
+    #[test]
+    fn display_flavor_for_every_flavor_dir() {
+        let cases = [
+            ("_retail_", "Retail"),
+            ("_forever_", "Forever"),
+            ("_ptr_", "PTR"),
+            ("_xptr_", "PTR"),
+            ("_beta_", "Beta"),
+            ("_classic_", "Classic"),
+            ("_classic_era_", "Classic Era"),
+            ("_classic_ptr_", "Classic PTR"),
+            ("_classic_era_ptr_", "Classic Era PTR"),
+        ];
+        // the table must cover the whole real flavor set, not a subset of it
+        assert_eq!(cases.len(), FLAVORS.len());
+        for (seg, want) in cases {
+            let path = format!("/Applications/World of Warcraft/{seg}/Interface/AddOns");
+            assert_eq!(flavor_from_path(&path), want, "flavor for {seg}");
+        }
+    }
+
+    /// The display name and the wire token are derived from the SAME path component,
+    /// so an install can never be labelled one flavor and uploaded as another.
+    #[test]
+    fn display_flavor_agrees_with_wire_token() {
+        for (seg, _) in FLAVORS {
+            let path = format!("/Volumes/Editing SSD/World of Warcraft/{seg}/Interface/AddOns");
+            let token = flavor_token_from_path(&path);
+            assert_eq!(token, seg.trim_matches('_'));
+            assert_eq!(flavor_from_path(&path), display_for_flavor_token(&token));
+        }
+    }
+
+    /// A flavor dir we don't have a display name for is still forwarded verbatim on
+    /// the wire (contract rule: pass-through, never an allowlist) and shows "Unknown".
+    #[test]
+    fn unknown_flavor_dir_is_unknown_but_forwarded() {
+        let p = "/Applications/World of Warcraft/_classic_wotlk_/Interface/AddOns";
+        assert_eq!(flavor_from_path(p), "Unknown");
+        assert_eq!(flavor_token_from_path(p), "classic_wotlk");
+    }
+
+    /// No `_flavor_` component at all (a custom / bare AddOns folder).
+    #[test]
+    fn no_flavor_segment_is_unknown() {
+        assert_eq!(flavor_from_path("/Users/me/WoW/Interface/AddOns"), "Unknown");
+        assert_eq!(flavor_token_from_path("/Users/me/WoW/Interface/AddOns"), "");
+    }
+
+    /// A flavor-looking string INSIDE a component name is not a flavor segment — the
+    /// old substring scan would have called this install "Retail".
+    #[test]
+    fn flavor_substring_in_a_folder_name_does_not_match() {
+        assert_eq!(
+            flavor_from_path("/Users/me/wow_retail_backup/Interface/AddOns"),
+            "Unknown"
+        );
+    }
+
+    /// A WoW folder holding `_retail_` and `_forever_` (the user's external-drive
+    /// layout) yields BOTH installs, Forever labelled as such.
+    #[test]
+    fn forever_is_detected_next_to_retail() {
+        let root = std::env::temp_dir().join(format!("gec-uplink-forever-{}", std::process::id()));
+        for seg in ["_retail_", "_forever_"] {
+            std::fs::create_dir_all(root.join(seg).join("Interface/AddOns")).unwrap();
+        }
+        let real_root = std::fs::canonicalize(&root).unwrap();
+        let found = enumerate_at(&root, &[], "Mac");
+        let picked_root = found.get(1).map(|d| wow_root_from_picked(&d.path));
+        let _ = std::fs::remove_dir_all(&root);
+        let flavors: Vec<&str> = found.iter().map(|d| d.flavor.as_str()).collect();
+        assert_eq!(flavors, vec!["Retail", "Forever"]);
+        assert!(found[1].path.ends_with("_forever_/Interface/AddOns"));
+        // and a pick of the Forever AddOns folder resolves to the same WoW root
+        assert_eq!(picked_root, Some(real_root));
+    }
 }

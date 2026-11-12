@@ -104,7 +104,12 @@ a:hover { text-decoration: underline; }
 .chip-danger { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); background: color-mix(in srgb, var(--color-danger) 8%, transparent); }
 
 /* ── inputs ── */
-input[type="text"], input[type="password"], select, textarea {
+/* Match by EXCLUSION, not by listing types: the app's text fields carry no `type`
+   attribute at all (`<input value=… />`), and `input[type="text"]` matches the
+   attribute, not the IDL default — so a type-listing selector skinned nothing and
+   every field fell back to native OS chrome (unreadable on SteamOS). Excluding the
+   box-shaped controls keeps this correct if a `type` is added to a field later. */
+input:not([type="checkbox"]):not([type="radio"]), select, textarea {
   background: var(--meter-bg); border: 1px solid var(--color-line); border-radius: 8px;
   padding: 0.55rem 0.8rem; color: var(--color-ink); outline: none;
   transition: border-color 0.12s ease; font: inherit; width: 100%;
@@ -222,20 +227,25 @@ label.field > span { display: block; font-size: 0.75rem; color: var(--color-ink-
 .sidebar {
   border-right: 1px solid var(--color-brass); border-image: linear-gradient(180deg, var(--color-brass), transparent 60%) 1;
   background: linear-gradient(180deg, var(--color-deep-2), var(--color-deep));
-  display: flex; flex-direction: column; padding: 1rem 0.75rem; gap: 0.2rem;
+  display: flex; flex-direction: column; padding: 1rem 0.75rem; gap: 0.4rem;
 }
 .brandmark { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0.4rem 1rem; }
 .page-head h1 {
   background: linear-gradient(180deg, var(--brasstext-1), var(--brasstext-2) 55%, var(--brasstext-3));
   -webkit-background-clip: text; background-clip: text; color: transparent; width: fit-content;
 }
+/* nav items are BUTTONS, not ghosts: visible border + fill at rest, brass
+   border on hover, gold text + brass border when active. Bigger emoji icons
+   and label type so the rail reads at a glance. */
 .nav-item {
-  display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; border-radius: 8px;
-  color: var(--color-ink-muted); cursor: pointer; border: 1px solid transparent; font-size: 0.92rem;
+  display: flex; align-items: center; gap: 0.7rem; padding: 0.62rem 0.8rem; border-radius: 10px;
+  color: var(--color-ink-muted); cursor: pointer; font-size: 1rem; font-weight: 600;
+  border: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-panel) 55%, transparent);
 }
-.nav-item:hover { color: var(--color-ink); background: var(--accent-soft); }
-.nav-item.active { color: var(--color-brass-hi); background: var(--accent-soft-hover); border-color: var(--rule-soft); }
-.nav-icon { width: 18px; text-align: center; }
+.nav-item:hover { color: var(--color-ink); background: var(--accent-soft-hover); border-color: var(--color-brass); }
+.nav-item.active { color: var(--color-brass-hi); background: var(--accent-soft-hover); border-color: var(--color-brass); }
+.nav-icon { width: 24px; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 .sidebar-foot { margin-top: auto; padding: 0.5rem; font-size: 0.7rem; color: var(--color-ink-faint); }
 
 .content { overflow-y: auto; padding: 1.5rem 1.75rem; }
@@ -243,7 +253,9 @@ label.field > span { display: block; font-size: 0.75rem; color: var(--color-ink-
 .page-head h1 { font-family: var(--font-display); font-size: 1.6rem; margin: 0.2rem 0 0; }
 
 .card { padding: 1rem 1.1rem; margin-bottom: 1rem; }
-.card h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+/* card headings: display serif in the brand gold — same treatment as the
+   website's panel headings (numbers stay white; headings carry the gold). */
+.card h3 { margin: 0 0 0.6rem; font-family: var(--font-display); font-size: 1.05rem; letter-spacing: 0.02em; color: var(--color-brass-hi); }
 .row { display: flex; align-items: center; gap: 0.6rem; }
 .row.between { justify-content: space-between; }
 .stack { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -265,10 +277,55 @@ label.field > span { display: block; font-size: 0.75rem; color: var(--color-ink-
 .acc-body { padding: 0 1rem 1rem; border-top: 1px solid var(--color-line); }
 .acc-body p { color: var(--color-ink-muted); line-height: 1.5; }
 
-/* stat blocks */
-.stat { padding: 0.8rem 1rem; text-align: center; }
-.stat .n { font-family: var(--font-display); font-size: 1.5rem; color: var(--color-brass-hi); }
-.stat .l { font-size: 0.72rem; color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.1em; }
+/* the race clock — a button-like tile the countdown lives in, clearly set
+   apart from the standings below. The time ticks locally every second. */
+.race-clock {
+  text-align: center; padding: 0.65rem 0.9rem; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-brass) 45%, transparent);
+  background: var(--accent-soft);
+}
+.race-clock-time {
+  font-size: 1.5rem; font-weight: 650; line-height: 1.25; color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+/* the workshop row — [In the workshop] · winning item … expected date */
+.workshop-row { display: flex; align-items: center; gap: 0.6rem; }
+.workshop-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.workshop-eta { flex: none; font-size: 0.82rem; color: var(--color-ink-muted); white-space: nowrap; }
+
+/* vote standings (Home "drawing board" card) — strict single-line rows:
+   faint rank, ellipsized title (never wraps), compact ✓-yours marker, and a
+   right-aligned tabular count under a small-caps column header. */
+.vote-head {
+  display: flex; justify-content: space-between; margin-top: 0.7rem; padding: 0 0.2rem 0.3rem;
+  font-size: 0.68rem; color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.12em;
+}
+.vote-list { display: flex; flex-direction: column; }
+.vote-row {
+  display: flex; align-items: center; gap: 0.55rem; padding: 0.45rem 0.2rem;
+  border-top: 1px solid var(--color-line); cursor: pointer;
+}
+.vote-row:hover .vote-title { color: var(--color-brass-hi); }
+.vote-rank { flex: none; width: 1.1rem; text-align: right; font-size: 0.78rem; color: var(--color-ink-faint); }
+.vote-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vote-mine { flex: none; font-size: 0.72rem; color: var(--color-goblin); white-space: nowrap; }
+.vote-count { flex: none; min-width: 2rem; text-align: right; font-weight: 600; }
+
+/* stat blocks — homepage-standard tiles (mirrors the website's BigStat /
+   StatTile): bordered panel tiles, centered, BODY-font semibold tabular
+   numbers in white (the display serif made digits ragged and misaligned),
+   small-caps muted labels. Flex keeps every tile in a row the same height
+   with numbers on a shared line; coin/unit letters inside carry the color. */
+.stat {
+  display: flex; flex-direction: column; justify-content: center; text-align: center;
+  padding: 0.8rem 0.9rem; border: 1px solid var(--color-line); border-radius: 10px;
+  background: var(--accent-soft);
+}
+.stat .n {
+  font-size: 1.35rem; font-weight: 650; line-height: 1.2; color: var(--color-ink);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.stat .l { margin-top: 0.15rem; font-size: 0.68rem; color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.12em; }
 
 /* ══════════════════ collapsed tray panel ══════════════════ */
 .tray { display: flex; flex-direction: column; height: 100%; }

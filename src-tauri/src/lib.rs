@@ -9,10 +9,13 @@ mod config;
 mod delivery;
 mod installs;
 mod net;
+mod packed;
 mod schedule;
 mod selfupdate;
 mod svparse;
+mod watcher;
 mod sync;
+mod synclog;
 mod version;
 
 use config::{AppConfig, AppState};
@@ -51,6 +54,9 @@ pub fn run() {
     let state = AppState {
         config: std::sync::Mutex::new(AppConfig::load(&config_path)),
         config_path,
+        syncing: Default::default(),
+        sync_pending: Default::default(),
+        coalescing: Default::default(),
     };
 
     tauri::Builder::default()
@@ -166,6 +172,11 @@ pub fn run() {
             // backstop that also re-parses on SV-file mtime change. Both defer to
             // the sync-while-running gate inside sync_all; manual Sync-now bypasses
             // it. Errors are swallowed (best-effort; the UI shows per-stream state).
+            // Background passes need a handle to reach the UI; hand it to the sync log
+            // once, here, so sync_pass can emit from any task without threading a handle
+            // through every call site.
+            synclog::set_app_handle(app.handle().clone());
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // small launch delay so pairing/first-render settle before we parse
@@ -177,7 +188,10 @@ pub fn run() {
                         // sync_all) decide what actually uploads — there is no global master
                         // switch. A token is still required (nothing to upload unpaired).
                         if auth::has_token() {
-                            let _ = sync::sync_all(state.inner(), false).await;
+                            // sync_pass records the pass to the rolling sync log and
+                            // emits uplink:sync-finished with it, so a timed check the
+                            // user never asked for still shows up in the log.
+                            let _ = sync::sync_pass(state.inner(), synclog::Trigger::Timed).await;
                         }
                     }
                     let secs = {
@@ -188,6 +202,12 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 }
             });
+
+            // ── Feedwerks §4.1: SavedVariables instant-capture watcher — a
+            // /reload flush syncs in seconds; the interval loop above stays as
+            // the backstop safety net. Ships publicly; fails soft to the
+            // backstop if the OS won't give us the watches (watcher.rs).
+            watcher::spawn(app.handle().clone());
 
             // ── auto-update scheduler (spec §9): one pass shortly after launch,
             // then a daily pass when the local clock crosses auto_update_time.
@@ -240,11 +260,9 @@ pub fn run() {
             // Click-away dismisses the tray dropdown (a transient popover). Only
             // the tray — the main window stays put when it loses focus. Stamp the
             // blur so the tray-icon click that caused it reads as a close.
-            WindowEvent::Focused(false) => {
-                if window.label() == "tray" {
-                    LAST_TRAY_BLUR_MS.store(now_ms(), Ordering::Relaxed);
-                    let _ = window.hide();
-                }
+            WindowEvent::Focused(false) if window.label() == "tray" => {
+                LAST_TRAY_BLUR_MS.store(now_ms(), Ordering::Relaxed);
+                let _ = window.hide();
             }
             _ => {}
         })
@@ -254,8 +272,11 @@ pub fn run() {
             commands::set_base_url,
             commands::set_sync_while_running,
             commands::set_sync_interval,
+            commands::set_watch_enabled,
+            commands::set_watch_debounce,
             commands::sync_now,
             commands::get_sync_status,
+            commands::get_sync_log,
             commands::reset_cursors,
             commands::purge_sync_queue,
             commands::list_sync_accounts,
@@ -263,7 +284,8 @@ pub fn run() {
             commands::set_account_alias,
             commands::mark_onboarded,
             commands::dismiss_broadcast,
-            commands::pair_device,
+            commands::pair_start,
+            commands::pair_poll,
             commands::unpair,
             commands::detect_installs,
             commands::enumerate_installs_at,
@@ -310,9 +332,12 @@ pub fn headless_sync() {
     let state = AppState {
         config: std::sync::Mutex::new(config),
         config_path,
+        syncing: Default::default(),
+        sync_pending: Default::default(),
+        coalescing: Default::default(),
     };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    match rt.block_on(sync::sync_all(&state, true)) {
+    match rt.block_on(sync::sync_pass(&state, synclog::Trigger::Manual)) {
         Ok(results) => {
             println!("{}", serde_json::to_string_pretty(&results).unwrap_or_default());
             eprintln!("sync-once: {} stream result(s)", results.len());
@@ -389,6 +414,30 @@ pub fn parse_only(file: &str, global: &str) {
             println!("    · {}", serde_json::to_string(e).unwrap_or_default());
         }
     }
+}
+
+/// Dev harness: parse a real SV file and print the packed-sessions verification
+/// report (packed contract §5). No keychain, no network. Exit code 0 only on a clean
+/// report; 2 when the file has no packed copy at all; 1 on a parse failure (which is
+/// also what a primary-mode file with any pack problem gives).
+pub fn verify_packed(file: &str, global: &str) {
+    let t0 = std::time::Instant::now();
+    let export = match svparse::parse_export_file(std::path::Path::new(file), global) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("parse failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!("parsed {file} [{global}] in {:.2}s", t0.elapsed().as_secs_f64());
+    let Some(rep) = export.pack else {
+        println!("  no `packed` / `_format.packed` in this file (shadow not on, or an older file)");
+        std::process::exit(2);
+    };
+    for line in rep.lines() {
+        println!("{line}");
+    }
+    std::process::exit(if rep.is_clean() { 0 } else { 1 });
 }
 
 /// The same location Tauri's `app_config_dir()` resolves to for this bundle id, so

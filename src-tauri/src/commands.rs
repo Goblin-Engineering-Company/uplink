@@ -4,7 +4,7 @@
 //! network → lock → write).
 
 use crate::auth;
-use crate::catalog::{self, Catalog, PairRequest};
+use crate::catalog::{self, Catalog, PairPollRequest, PairStartRequest};
 use crate::config::{Account, AppConfig, AppState, Install};
 use crate::delivery;
 use crate::installs::{self, DetectedInstall};
@@ -51,6 +51,22 @@ pub fn set_sync_while_running(state: State<AppState>, value: bool) -> R<()> {
 pub fn set_sync_interval(state: State<AppState>, secs: u64) -> R<()> {
     // clamp to a sane floor so a stray 0 doesn't busy-loop the backstop
     state.config.lock().unwrap().sync_interval_secs = secs.max(30);
+    state.persist()
+}
+
+// Feedwerks §4.1 instant capture (SavedVariables watcher) — a shipping setting,
+// surfaced in Settings → Data capture.
+#[tauri::command]
+pub fn set_watch_enabled(state: State<AppState>, enabled: bool) -> R<()> {
+    state.config.lock().unwrap().watch_enabled = enabled;
+    state.persist()
+    // the watcher's 60s rescan tick picks the change up on its own
+}
+
+#[tauri::command]
+pub fn set_watch_debounce(state: State<AppState>, ms: u64) -> R<()> {
+    // floor keeps a stray 0 from firing mid-write; flushes take ~100ms+
+    state.config.lock().unwrap().watch_debounce_ms = ms.max(100);
     state.persist()
 }
 
@@ -164,40 +180,88 @@ pub fn dismiss_broadcast(state: State<AppState>, id: i64) -> R<()> {
 
 // ── auth ──
 
+/// What the pair UI renders (QR pairing, spec 2026-07-26): the QR encodes
+/// `approve_url`; the code is the type-it-at-/pair fallback; the secret comes
+/// straight back to us via pair_poll and never appears in the QR or URL.
+#[derive(Serialize)]
+pub struct PairSessionInfo {
+    pub code: String,
+    pub secret: String,
+    pub approve_url: String,
+    pub expires_in: u64,
+    pub poll_interval: f64,
+}
+
+/// QR pairing step 1: start an app-initiated pairing session. The approval
+/// URL is built from OUR configured base (the server we actually talk to) —
+/// a dev-channel build pointed at a dev server must QR to that server, and
+/// behind a proxy the server can't always see its own public origin.
 #[tauri::command]
-pub async fn pair_device(state: State<'_, AppState>, code: String) -> R<Account> {
+pub async fn pair_start(state: State<'_, AppState>) -> R<PairSessionInfo> {
     let base = base_url(&state);
-    let req = PairRequest {
-        code: code.trim().to_uppercase(),
-        // The device name is set on the website when the pairing code is created;
-        // Uplink never collects it. Sending empty makes the server keep that name
-        // (COALESCE(NULLIF('',''), name)); it returns the name for us to display.
-        name: String::new(),
+    let req = PairStartRequest {
+        name: installs::machine_label(),
         platform: std::env::consts::OS.to_string(),
         app: "gec-uplink".to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
-    let resp: catalog::PairResponse =
-        crate::net::post_json(&base, "/api/devices/pair", &req, false).await?;
+    let resp: catalog::PairStartResponse =
+        crate::net::post_json(&base, "/api/devices/pair/start", &req, false).await?;
+    Ok(PairSessionInfo {
+        approve_url: format!("{}/pair?code={}", base.trim_end_matches('/'), resp.code),
+        code: resp.code,
+        secret: resp.secret,
+        expires_in: resp.expires_in.unwrap_or(900),
+        poll_interval: resp.poll_interval.unwrap_or(2.5),
+    })
+}
 
-    auth::store_token(&resp.token)?;
-    let account = Account {
-        handle: resp.account.handle,
-        tier: resp.account.tier,
-        role: resp.account.role,
-        channels: resp.account.channels,
-    };
-    {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.device_id = Some(resp.device_id);
-        // Device name comes from the server (set on the website), not the client.
-        if let Some(n) = resp.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            cfg.device_name = Some(n.to_string());
+/// The pair UI's poll tick. `pending`/`denied`/`expired` come back as bare
+/// statuses; on `approved` the token is stored and the config updated exactly
+/// as the old code-exchange pairing did, then the account returns to the UI.
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum PairPollOutcome {
+    Pending,
+    Denied,
+    Expired,
+    Approved { account: Account },
+}
+
+#[tauri::command]
+pub async fn pair_poll(state: State<'_, AppState>, code: String, secret: String) -> R<PairPollOutcome> {
+    let base = base_url(&state);
+    let resp: catalog::PairPollResponse =
+        crate::net::post_json(&base, "/api/devices/pair/poll", &PairPollRequest { code, secret }, false).await?;
+    match resp.status.as_str() {
+        "pending" => Ok(PairPollOutcome::Pending),
+        "denied" => Ok(PairPollOutcome::Denied),
+        "expired" => Ok(PairPollOutcome::Expired),
+        "approved" => {
+            let token = resp.token.ok_or("approved without a token")?;
+            let acct = resp.account.ok_or("approved without an account")?;
+            auth::store_token(&token)?;
+            let account = Account {
+                handle: acct.handle,
+                tier: acct.tier,
+                role: acct.role,
+                channels: acct.channels,
+            };
+            {
+                let mut cfg = state.config.lock().unwrap();
+                cfg.device_id = resp.device_id;
+                // Device name authority is the website (set on the approval page);
+                // it echoes back here and on every /api/me heartbeat.
+                if let Some(n) = resp.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    cfg.device_name = Some(n.to_string());
+                }
+                cfg.account = Some(account.clone());
+            }
+            state.persist()?;
+            Ok(PairPollOutcome::Approved { account })
         }
-        cfg.account = Some(account.clone());
+        other => Err(format!("unexpected pairing status: {other}")),
     }
-    state.persist()?;
-    Ok(account)
 }
 
 #[tauri::command]
@@ -455,9 +519,27 @@ pub async fn fetch_home(app: tauri::AppHandle, state: State<'_, AppState>) -> R<
         .filter(|s| !s.is_empty())
     {
         let mut cfg = state.config.lock().unwrap();
+        let old_name = cfg.device_name.clone();
         if cfg.device_name.as_deref() != Some(dev_name) {
             cfg.device_name = Some(dev_name.to_string());
             changed = true;
+        }
+        // Install labels FOLLOW the paired device name unless the user renamed
+        // them. "Auto-derived" = the label still equals a machine fallback
+        // (hostname / "<user>'s PC" / "This PC") or the PREVIOUS device name —
+        // those were never a human's choice, so a stale "My PC" flips to
+        // the paired name here. A custom label never matches and is untouched.
+        let auto = installs::machine_label();
+        for i in cfg.installs.iter_mut() {
+            let l = i.label.trim().to_string();
+            let is_auto = l == auto
+                || l == "This PC"
+                || l.ends_with("'s PC")
+                || old_name.as_deref() == Some(l.as_str());
+            if is_auto && l != dev_name {
+                i.label = dev_name.to_string();
+                changed = true;
+            }
         }
     }
     // Honor the server's resync signal (contract §5b): /api/me carries a top-level
@@ -552,18 +634,35 @@ pub async fn install_addon(
     url: String,
     channel: String,
 ) -> R<String> {
-    let addons_dir = {
+    let (addons_dir, flavor) = {
         let cfg = state.config.lock().unwrap();
         cfg.installs
             .iter()
             .find(|i| i.id == install_id)
-            .map(|i| i.path.clone())
+            .map(|i| (i.path.clone(), i.flavor.clone()))
             .ok_or("unknown install")?
     };
 
     // Rebuild a server download URL against our base_url in case the catalog baked
     // in a wrong host (e.g. a dev localhost from a mis-pointed publish).
     let base = base_url(&state);
+
+    // Authoritative flavor gate. The views filter too, but this is the side that
+    // writes into the live AddOns folder, so it refuses regardless of what the UI
+    // sent — installing a Retail-only addon into a Classic client is the harmful
+    // case here. Only a catalog we actually read can refuse: a failed fetch leaves
+    // the install to the caller rather than blocking every install when offline.
+    if let Ok(cat) = catalog::fetch_catalog(&base).await {
+        if let Some(def) = cat.addon(&slug) {
+            if !def.supports_flavor(&flavor) {
+                return Err(format!(
+                    "{} doesn't support {flavor} — it's built for {}.",
+                    def.name,
+                    def.flavors.join(" / ")
+                ));
+            }
+        }
+    }
     let url = crate::net::resolve_download_url(&url, &base);
     let outcome = delivery::download_and_install(&url, &addons_dir, &base).await?;
     let folder = outcome
@@ -618,10 +717,73 @@ pub struct UpdateItem {
     pub latest: String,
     pub url: String,
     pub channel: String,
+    /// This item is a FIRST install (nothing on disk), not a version bump — the UI
+    /// labels it "Install" instead of "Update". It is still part of the same work
+    /// list, which is the point: the count and the bulk action share one source.
+    pub missing: bool,
 }
 
-/// Resolve, per install+addon, the release the addon *should* be on (pinned
-/// version if set, else the channel's latest) and whether it's behind.
+/// Is `channel` one this account may pull from? `public` is always granted; anything
+/// else must be in the paired account's entitlement list. Mirrors the frontend's
+/// `isEntitled` (Addons.tsx) so both sides agree on what is downloadable.
+fn is_entitled(cfg: &AppConfig, channel: &str) -> bool {
+    channel == "public"
+        || cfg
+            .account
+            .as_ref()
+            .is_some_and(|acct| acct.channels.iter().any(|c| c == channel))
+}
+
+/// The release an install SHOULD be on for one addon — `(channel, version, url)`, or
+/// `None` when there is nothing this account may pull (unsupported flavor, no entitled
+/// build, a pin that doesn't exist on the channel).
+///
+/// THE single delivery-target resolution: `compute_updates` (which feeds the "Update
+/// all (N)" count, the tray list AND `update_all`'s work list) and `compute_reconcile`
+/// both go through it, so a row the UI counts can no longer be missing from the list
+/// the bulk action executes. Channel choice matches the UI's rule exactly: the
+/// effective channel (per-addon override, else the install default) wins when it is
+/// entitled and carries a build, otherwise the LAST entitled channel in catalog order
+/// that has one. Without that fallback a dev-channel-only addon on a `public` install
+/// resolved to no release at all, so bulk update silently skipped it while its row
+/// still showed "update" — UP-005, the Gadgets / GEC-Console report.
+fn resolve_target(
+    cfg: &AppConfig,
+    cat: &Catalog,
+    inst: &Install,
+    a: &crate::config::InstalledAddon,
+) -> Option<(String, String, String)> {
+    let def = cat.addon(&a.slug)?;
+    // flavor gate: never offer/install an addon on a flavor it doesn't support (e.g. a
+    // Retail-only addon on a Classic install). `install_addon` re-checks it server-side.
+    if !def.supports_flavor(&inst.flavor) {
+        return None;
+    }
+    let eff = inst.channel_for(&a.slug);
+    let usable = |ch: &str| is_entitled(cfg, ch) && def.channels.contains_key(ch);
+    let chan = if usable(&eff) {
+        eff.clone()
+    } else {
+        cat.channel_defs
+            .iter()
+            .rev()
+            .map(|c| c.slug.as_str())
+            .chain(std::iter::once("public")) // floor for a catalog with no channel_defs
+            .find(|s| usable(s))
+            .map(|s| s.to_string())
+            .unwrap_or(eff)
+    };
+    match &a.pinned_version {
+        Some(v) => def.release(&chan, v).map(|r| (chan.clone(), r.version.clone(), r.url.clone())),
+        // `latest_for` keeps its public floor; with a usable channel resolved above it
+        // only fires for a catalog whose channel_defs don't mention `public`.
+        None => def.latest_for(&chan).map(|l| (chan.clone(), l.version.clone(), l.url.clone())),
+    }
+}
+
+/// Everything an install has SELECTED that isn't on its target release yet: a version
+/// bump, or a first install of an enabled addon that never landed. Upgrade-only — a
+/// lower-numbered target is a channel switch and belongs to `compute_reconcile`.
 pub(crate) fn compute_updates(cfg: &AppConfig, cat: &Catalog) -> Vec<UpdateItem> {
     let mut out = Vec::new();
     for inst in &cfg.installs {
@@ -629,23 +791,20 @@ pub(crate) fn compute_updates(cfg: &AppConfig, cat: &Catalog) -> Vec<UpdateItem>
             continue; // offline install — don't offer updates
         }
         for a in inst.addons.iter().filter(|a| a.enabled) {
-            let Some(def) = cat.addon(&a.slug) else { continue };
-            if !def.supports_flavor(&inst.flavor) { continue; } // parity with compute_reconcile: never offer an update on a flavor the addon doesn't support (e.g. a Retail-only addon on a Classic install)
-            let chan = inst.channel_for(&a.slug);
-            let target = match &a.pinned_version {
-                Some(v) => def.release(&chan, v).map(|r| (r.version.clone(), r.url.clone())),
-                None => def.latest_for(&chan).map(|l| (l.version.clone(), l.url.clone())),
-            };
-            let Some((tv, turl)) = target else { continue };
+            let Some((chan, tv, turl)) = resolve_target(cfg, cat, inst, a) else { continue };
             let installed = a.installed_version.clone();
-            let behind = match &installed {
+            // Not installed = pending FIRST install, and it stays in the work list.
+            // It used to be dropped here ("that's an install, not an update") while the
+            // UI still counted the row, so the bulk button did nothing, silently (UP-005).
+            let wanted = match &installed {
                 Some(cur) => version::is_newer(&tv, cur),
-                None => false, // not installed = not an "update" (that's an install)
+                None => true,
             };
-            if behind {
+            if wanted {
                 out.push(UpdateItem {
                     install_id: inst.id.clone(),
                     slug: a.slug.clone(),
+                    missing: installed.is_none(),
                     installed,
                     latest: tv,
                     url: turl,
@@ -726,7 +885,12 @@ pub async fn update_all(state: State<'_, AppState>, install_id: String) -> R<Vec
             let cfg = state.config.lock().unwrap();
             cfg.installs.iter().find(|i| i.id == u.install_id).map(|i| i.path.clone())
         };
-        let Some(addons_dir) = addons_dir else { continue };
+        // Report a skip instead of silently dropping it: a bulk run that quietly does
+        // less than the button promised is exactly the UP-005 failure.
+        let Some(addons_dir) = addons_dir else {
+            done.push(format!("{}: FAILED (unknown install)", u.slug));
+            continue;
+        };
         let dl = crate::net::resolve_download_url(&u.url, &base);
         match delivery::download_and_install(&dl, &addons_dir, &base).await {
             Ok(outcome) => {
@@ -761,14 +925,9 @@ fn compute_reconcile(cfg: &AppConfig, cat: &Catalog, install_id: &str) -> Vec<Up
         return out; // offline — can't reach the AddOns folder
     }
     for a in inst.addons.iter().filter(|a| a.enabled) {
-        let Some(def) = cat.addon(&a.slug) else { continue };
-        if !def.supports_flavor(&inst.flavor) { continue; }   // flavor gate: don't offer/install an addon on a flavor it doesn't support (e.g. SBF on Classic)
-        let chan = inst.channel_for(&a.slug);
-        let target = match &a.pinned_version {
-            Some(v) => def.release(&chan, v).map(|r| (r.version.clone(), r.url.clone())),
-            None => def.latest_for(&chan).map(|l| (l.version.clone(), l.url.clone())),
-        };
-        let Some((tv, turl)) = target else { continue }; // no release on that channel → leave it
+        // same target resolution (flavor gate, entitlement, pin) as compute_updates —
+        // only the predicate below differs
+        let Some((chan, tv, turl)) = resolve_target(cfg, cat, inst, a) else { continue };
         let Some(cur) = a.installed_version.clone() else { continue }; // not installed → not a switch
         if cur != tv {
             out.push(UpdateItem {
@@ -778,6 +937,7 @@ fn compute_reconcile(cfg: &AppConfig, cat: &Catalog, install_id: &str) -> Vec<Up
                 latest: tv,
                 url: turl,
                 channel: chan,
+                missing: false,
             });
         }
     }
@@ -801,7 +961,10 @@ pub async fn reconcile_install(state: State<'_, AppState>, install_id: String) -
             let cfg = state.config.lock().unwrap();
             cfg.installs.iter().find(|i| i.id == u.install_id).map(|i| i.path.clone())
         };
-        let Some(addons_dir) = addons_dir else { continue };
+        let Some(addons_dir) = addons_dir else {
+            done.push(format!("{}: FAILED (unknown install)", u.slug));
+            continue;
+        };
         let dl = crate::net::resolve_download_url(&u.url, &base);
         match delivery::download_and_install(&dl, &addons_dir, &base).await {
             Ok(outcome) => {
@@ -905,7 +1068,18 @@ pub async fn report_installs(state: State<'_, AppState>) -> R<()> {
 /// cursors from the ack. Returns per-stream results for the UI to surface.
 #[tauri::command]
 pub async fn sync_now(state: State<'_, AppState>) -> R<Vec<SyncResult>> {
-    sync::sync_all(&state, true).await
+    // sync_pass, not sync_all: a manual click belongs in the rolling sync log next to
+    // the passes that fired on their own. Both surfaces that offer the button (the Data
+    // page and the tray panel) come through here, so both land in the log.
+    sync::sync_pass(&state, crate::synclog::Trigger::Manual).await
+}
+
+/// The rolling sync log: what every pass did and what triggered it, newest first.
+/// Read straight off its own file beside the config (never from AppConfig, which is
+/// rewritten wholesale on persist).
+#[tauri::command]
+pub fn get_sync_log(state: State<AppState>) -> Vec<crate::synclog::SyncLogEntry> {
+    crate::synclog::read(&crate::synclog::path_for(&state.config_path))
 }
 
 /// The cached sync counters (cursor / queued / last-sync / last-accepted) per
@@ -1006,12 +1180,13 @@ mod tests {
         serde_json::from_value(json!({ "addons": addons })).unwrap()
     }
     fn cfg_with(addons: serde_json::Value) -> AppConfig {
-        let mut c = AppConfig::default();
-        c.installs = vec![serde_json::from_value(json!({
-            "id": "i1", "label": "PC", "path": "/x", "flavor": "Retail", "addons": addons
-        }))
-        .unwrap()];
-        c
+        AppConfig {
+            installs: vec![serde_json::from_value(json!({
+                "id": "i1", "label": "PC", "path": "/x", "flavor": "Retail", "addons": addons
+            }))
+            .unwrap()],
+            ..Default::default()
+        }
     }
 
     // towncryer (renamed → megaphone) lingers with folder=None; megaphone is live → prune the ghost only.
@@ -1060,5 +1235,126 @@ mod tests {
     fn in_catalog_addon_never_pruned() {
         let cfg = cfg_with(json!([{"slug":"sbf","installed_version":"2026.07.25.2","folder":"SBF"}]));
         assert!(compute_orphans(&cfg, &cat(&["sbf"])).is_empty());
+    }
+
+    // ── the bulk work list (UP-005): what the "Update all (N)" count is drawn from ──
+
+    /// A catalog with per-addon `channels` / `flavors`, plus the two channel defs the
+    /// entitled-channel fallback walks.
+    fn cat2(addons: serde_json::Value) -> Catalog {
+        serde_json::from_value(json!({
+            "channel_defs": [{"slug":"public","name":"Public"},{"slug":"dev","name":"Dev"}],
+            "addons": addons
+        }))
+        .unwrap()
+    }
+    /// An install on a REAL directory (compute_updates skips offline installs), on the
+    /// `public` channel, with `flavor` and the given addon records. `granted` = the
+    /// paired account's channel entitlements.
+    fn cfg_at(flavor: &str, granted: &[&str], addons: serde_json::Value) -> AppConfig {
+        let dir = std::env::temp_dir().to_string_lossy().to_string();
+        AppConfig {
+            account: Some(
+                serde_json::from_value(json!({
+                    "handle":"me","tier":null,"role":"dev","channels": granted
+                }))
+                .unwrap(),
+            ),
+            installs: vec![serde_json::from_value(json!({
+                "id": "i1", "label": "PC", "path": dir, "flavor": flavor,
+                "channel": "public", "addons": addons
+            }))
+            .unwrap()],
+            ..Default::default()
+        }
+    }
+    fn slugs(items: &[UpdateItem]) -> Vec<&str> {
+        items.iter().map(|u| u.slug.as_str()).collect()
+    }
+
+    // The UP-005 core: an addon the user SELECTED but that never landed on disk is a
+    // first install, and it must be in the list `update_all` executes — the UI counts
+    // it, so dropping it here is what made bulk update silently do nothing.
+    #[test]
+    fn work_list_includes_a_never_installed_enabled_addon() {
+        let cfg = cfg_at("Retail", &[], json!([{"slug":"gadgets","enabled":true}]));
+        let cat = cat2(json!([{"slug":"gadgets","name":"Gadgets",
+            "channels":{"public":{"version":"2026.07.31.1","url":"/d/g.zip"}}}]));
+        let items = compute_updates(&cfg, &cat);
+        assert_eq!(slugs(&items), ["gadgets"]);
+        assert!(items[0].missing);
+        assert_eq!(items[0].installed, None);
+        assert_eq!(items[0].latest, "2026.07.31.1");
+    }
+
+    // The other half of UP-005: gadgets / gec-console had builds ONLY on `dev` while
+    // the install follows `public`. The old resolution asked for the install channel
+    // (falling back to public) and found nothing, so the row showed "update" and the
+    // bulk run skipped it. An entitled dev build now resolves.
+    #[test]
+    fn work_list_falls_back_to_an_entitled_dev_only_channel() {
+        let cfg = cfg_at(
+            "Retail",
+            &["dev"],
+            json!([{"slug":"gec-console","enabled":true,"installed_version":"2026.07.21.1"}]),
+        );
+        let cat = cat2(json!([{"slug":"gec-console","name":"GEC-Console",
+            "channels":{"dev":{"version":"2026.07.21.2","url":"/d/c.zip"}}}]));
+        let items = compute_updates(&cfg, &cat);
+        assert_eq!(slugs(&items), ["gec-console"]);
+        assert_eq!(items[0].channel, "dev");
+        assert!(!items[0].missing);
+    }
+
+    // …but only when the account is entitled to that channel.
+    #[test]
+    fn dev_only_addon_without_entitlement_is_no_work() {
+        let cfg = cfg_at("Retail", &[], json!([{"slug":"gec-console","enabled":true}]));
+        let cat = cat2(json!([{"slug":"gec-console","name":"GEC-Console",
+            "channels":{"dev":{"version":"2026.07.21.2","url":"/d/c.zip"}}}]));
+        assert!(compute_updates(&cfg, &cat).is_empty());
+    }
+
+    // Flavor gate: a Retail-only addon is work on Retail and never on Classic Era —
+    // the flavor string comes from the install, which H2 now derives correctly.
+    #[test]
+    fn flavor_gate_keeps_a_retail_only_addon_off_classic() {
+        let addons = json!([{"slug":"sbf","enabled":true}]);
+        let cat = cat2(json!([{"slug":"sbf","name":"SBF","flavors":["Retail"],
+            "channels":{"public":{"version":"2026.09.01.1","url":"/d/s.zip"}}}]));
+        assert_eq!(slugs(&compute_updates(&cfg_at("Retail", &[], addons.clone()), &cat)), ["sbf"]);
+        assert!(compute_updates(&cfg_at("Classic Era", &[], addons.clone()), &cat).is_empty());
+        assert!(compute_updates(&cfg_at("Classic", &[], addons), &cat).is_empty());
+    }
+
+    // An empty/absent `flavors` list is permissive (older catalogs impose no gate).
+    #[test]
+    fn addon_without_flavors_installs_on_any_flavor() {
+        let cat = cat2(json!([{"slug":"haul","name":"Haul",
+            "channels":{"public":{"version":"2026.08.04.1","url":"/d/h.zip"}}}]));
+        let cfg = cfg_at("Classic PTR", &[], json!([{"slug":"haul","enabled":true}]));
+        assert_eq!(slugs(&compute_updates(&cfg, &cat)), ["haul"]);
+    }
+
+    // Nothing to do when the installed build already IS the target.
+    #[test]
+    fn up_to_date_addon_is_not_work() {
+        let cfg = cfg_at(
+            "Retail",
+            &[],
+            json!([{"slug":"haul","enabled":true,"installed_version":"2026.08.04.1"}]),
+        );
+        let cat = cat2(json!([{"slug":"haul","name":"Haul",
+            "channels":{"public":{"version":"2026.08.04.1","url":"/d/h.zip"}}}]));
+        assert!(compute_updates(&cfg, &cat).is_empty());
+    }
+
+    // A disabled record is not selected for this install → not work, installed or not.
+    #[test]
+    fn disabled_addon_is_not_work() {
+        let cfg = cfg_at("Retail", &[], json!([{"slug":"haul","enabled":false}]));
+        let cat = cat2(json!([{"slug":"haul","name":"Haul",
+            "channels":{"public":{"version":"2026.08.04.1","url":"/d/h.zip"}}}]));
+        assert!(compute_updates(&cfg, &cat).is_empty());
     }
 }

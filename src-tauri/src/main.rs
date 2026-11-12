@@ -26,5 +26,13 @@ fn main() {
         gec_uplink_lib::parse_only(&file, &global);
         return;
     }
+    // `gec-uplink verify-packed <file> <Global>` — parse an SV file and print the
+    // packed-sessions verification report (dev; no keychain/network).
+    if let Some(i) = args.iter().position(|a| a == "verify-packed") {
+        let file = args.get(i + 1).cloned().unwrap_or_default();
+        let global = args.get(i + 2).cloned().unwrap_or_else(|| "HaulData".to_string());
+        gec_uplink_lib::verify_packed(&file, &global);
+        return;
+    }
     gec_uplink_lib::run()
 }

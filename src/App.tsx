@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import type React from "react";
+import { HomeIcon, AddonsIcon, DataIcon, SettingsIcon } from "./components/NavIcons";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import gecLogo from "./assets/gec-logo.png";
@@ -21,6 +23,10 @@ export type Ctx = {
   // Bumped whenever the server's catalog dirty-stamp moves (uplink:catalog-changed),
   // so catalog-fetching effects can depend on it and re-pull the catalog.
   catalogNonce: number;
+  // Bumped when a background sync pass finishes (uplink:sync-finished — the
+  // SV watcher's instant capture or the backstop poll), so the Data page's
+  // counters and Home's cards refresh the moment new rows land.
+  syncNonce: number;
   // Re-open / close the setup wizard on demand (Settings "Find installs" re-entry).
   // On genuine first run the wizard shows because `!onboarded`; these drive it AFTER
   // onboarding, so re-running it returns to the app on finish/skip (§2.1–2.2).
@@ -39,6 +45,7 @@ export default function App({ surface }: { surface: "tray" | "window" }) {
   const [err, setErr] = useState<string | null>(null);
   const [version, setVersion] = useState("");
   const [catalogNonce, setCatalogNonce] = useState(0);
+  const [syncNonce, setSyncNonce] = useState(0);
   // Re-entered setup (Settings → "Find installs"). First run shows Setup via
   // !onboarded; this lets an already-onboarded user re-open the wizard.
   const [forceSetup, setForceSetup] = useState(false);
@@ -49,9 +56,20 @@ export default function App({ surface }: { surface: "tray" | "window" }) {
     setConfig(c);
   }, []);
 
+  // Initial load. Both calls are async reads FROM an external system (Tauri IPC), so
+  // they run inside a callback rather than the effect's synchronous body, and an
+  // `alive` flag drops a late response after unmount.
   useEffect(() => {
-    reload().catch((e) => setErr(String(e)));
-    getVersion().then(setVersion).catch(() => {}); // real app version, not hardcoded
+    let alive = true;
+    (async () => {
+      try {
+        await reload();
+      } catch (e) {
+        if (alive) setErr(String(e));
+      }
+    })();
+    getVersion().then((v) => { if (alive) setVersion(v); }).catch(() => {}); // real app version, not hardcoded
+    return () => { alive = false; };
   }, [reload]);
 
   // Server-state heartbeat: on launch + window focus + every HEARTBEAT_MS, pull
@@ -89,6 +107,13 @@ export default function App({ surface }: { surface: "tray" | "window" }) {
     return () => { un.then((f) => f()); };
   }, []);
 
+  // Background sync finished (watcher instant capture / backstop): views that
+  // show sync counters or server-derived cards re-pull on the bump.
+  useEffect(() => {
+    const un = listen("uplink:sync-finished", () => setSyncNonce((n) => n + 1));
+    return () => { un.then((f) => f()); };
+  }, []);
+
   if (err) return (
     <div className="center-screen">
       <div className="err">Failed to load: {err}</div>
@@ -104,6 +129,7 @@ export default function App({ surface }: { surface: "tray" | "window" }) {
 
   const ctx: Ctx = {
     config, reload, go: setSection, catalogNonce,
+    syncNonce,
     openSetup: () => setForceSetup(true),
     closeSetup: () => setForceSetup(false),
   };
@@ -153,9 +179,9 @@ export default function App({ surface }: { surface: "tray" | "window" }) {
   );
 }
 
-const NAV: Array<{ id: Section; label: string; icon: string }> = [
-  { id: "home", label: "Home", icon: "⌂" },
-  { id: "addons", label: "Addons", icon: "⬡" },
-  { id: "data", label: "Data", icon: "≋" },
-  { id: "settings", label: "Settings", icon: "⚙" },
+const NAV: Array<{ id: Section; label: string; icon: React.ReactNode }> = [
+  { id: "home", label: "Home", icon: <HomeIcon /> },
+  { id: "addons", label: "Add-ons", icon: <AddonsIcon /> },
+  { id: "data", label: "Data", icon: <DataIcon /> },
+  { id: "settings", label: "Settings", icon: <SettingsIcon /> },
 ];

@@ -4,6 +4,13 @@
 # Result: one GitHub Release for that tag with the per-OS installers attached AND
 # the updater manifest (latest.json), which the app reads to self-update.
 #
+# Shape (draft -> publish, required by spec 2026-07-14 §3 after the dev.7 incident):
+#   create-release  -> build (mac/linux/windows matrix) -> publish-release
+#                        \-> flatpak (opt-in, artifact-only)
+#   cleanup-failed-run  (if: failure() || cancelled())
+# The release is a DRAFT for the whole build, so nothing is publicly downloadable
+# until every platform has uploaded; publishing is what fires the mirror webhook.
+#
 # ───────────────────────────────────────────────────────────────────────────────
 # ONE-TIME HUMAN SETUP (do these once, before the first tag push):
 #
@@ -42,7 +49,50 @@ permissions:
   contents: write
 
 jobs:
+  # ── 1. Create the release as a DRAFT (once, before any build) ──
+  # Requirement from the CI spec (2026-07-14 §3), escalated to *required* by the
+  # v0.2.0-dev.7 incident: a non-draft release goes public the instant the FIRST
+  # platform finishes uploading, so a gated (dev/prerelease) build is publicly
+  # downloadable for the whole length of the slow mac job — and if the mirror then
+  # only partially strips it, it stays public. Creating the draft here (rather than
+  # letting each matrix leg create it) also removes the three-way race where all
+  # three jobs look up the tag, all miss, and all create their own release.
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+    steps:
+      - name: Create (or reuse) the draft release for this tag
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          # A tag with any suffix (v0.4.0-pre.1, v0.4.0-dev.1) is a prerelease;
+          # a plain tag (v0.4.0) is a public release. The server manifest gating
+          # controls access per channel — this just marks the GitHub release type.
+          # NOTE: this is the ONLY place the channel is derived, exactly as before.
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          set -euo pipefail
+          # A draft release is NOT returned by /releases/tags/{tag}; it only shows
+          # in the full release list. Look there so a re-run reuses its draft.
+          id="$(gh api "repos/$GH_REPO/releases" --paginate \
+                  --jq "map(select(.tag_name == \"$TAG\")) | first | .id // empty")"
+          if [ -n "$id" ]; then
+            echo "Reusing existing release $id for $TAG"
+          else
+            args=(--draft --title "GEC Uplink $TAG" --notes "See the assets below to download GEC Uplink for your platform. Installed copies update themselves.")
+            if [ "$IS_PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+            gh release create "$TAG" "${args[@]}"
+            id="$(gh api "repos/$GH_REPO/releases" --paginate \
+                    --jq "map(select(.tag_name == \"$TAG\")) | first | .id")"
+            echo "Created draft release $id for $TAG"
+          fi
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -95,15 +145,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Reuse the pushed tag; the release is created/updated for it.
-          tagName: ${{ github.ref_name }}
-          releaseName: "GEC Uplink ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download GEC Uplink for your platform. Installed copies update themselves."
-          releaseDraft: false
-          # A tag with any suffix (v0.4.0-pre.1, v0.4.0-dev.1) is a prerelease;
-          # a plain tag (v0.4.0) is a public release. The server manifest gating
-          # controls access per channel — this just marks the GitHub release type.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Upload into the DRAFT the create-release job made. Passing releaseId
+          # (instead of tagName) means tauri-action never creates or publishes a
+          # release itself — it only attaches this platform's assets + .sig files.
+          # The draft/prerelease flags live on that release, set once, up there.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           # createUpdaterArtifacts (in tauri.conf.json) makes tauri-action also
           # generate + upload latest.json — the manifest the app's updater reads.
           args: ${{ matrix.args }}
@@ -167,3 +213,79 @@ jobs:
         with:
           name: gec-uplink-flatpak
           path: gec-uplink.flatpak
+
+  # ── 3. Publish the draft, once every platform's assets are attached ──
+  # `needs: build` uses the DEFAULT success() condition, so this job runs only if
+  # all three matrix legs succeeded. Publishing is what fires GitHub's
+  # `release: published` webhook, so the droplet's mirror sees the COMPLETE asset
+  # list in one event — no partial-mirror window, and the gated strip (which
+  # deletes a dev/prerelease release + tag once fully mirrored) shrinks to seconds.
+  #
+  # It deliberately does NOT wait on the mirror: the mirror is TRIGGERED by this
+  # publish (CI → release published → webhook → droplet). Gating publish on the
+  # mirror would deadlock. It also deliberately does NOT wait on `flatpak`: that
+  # job attaches nothing to the release (artifact-only, by design — see above),
+  # and it is opt-in, so requiring it would either stall every release behind a
+  # slow container build or hang forever when BUILD_FLATPAK is unset.
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flip the draft to published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+          echo "Published $TAG — the mirror webhook now sees the full asset set."
+
+  # ── 4. Clean up after a failed / cancelled run ──
+  # TAG LIFECYCLE (spec §3): a tag exists to trigger CI. On a SUCCESSFUL gated
+  # release the server deletes the release + tag for us. On a FAILED or cancelled
+  # run nothing fires server-side, so the run must clean up after itself —
+  # otherwise the tag is poisoned and re-cutting the SAME version collides
+  # (dev.5/dev.6 had to be deleted by hand).
+  #
+  # `if:` uses status-check functions, which is what lets this job run even though
+  # `flatpak` may be SKIPPED (BUILD_FLATPAK unset). Normally a job whose `needs`
+  # contains a skipped job is itself skipped; a condition containing failure() /
+  # cancelled() is evaluated anyway. A skipped job is NOT a failure, so an opted-out
+  # flatpak cannot trip this — and cannot hang it either, since a skipped job is a
+  # completed job for `needs` purposes.
+  #
+  # SAFETY: it refuses to touch a release that is already PUBLISHED. That covers
+  # the flatpak-failed-after-publish case, and it honours the rule that public
+  # release tags are permanent (they anchor the assets + source archive).
+  cleanup-failed-run:
+    if: failure() || cancelled()
+    needs: [create-release, build, flatpak, publish-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the draft release + tag this run left behind
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # NOTE: `.draft // empty` would be WRONG here — jq's `//` swallows `false`,
+          # so a PUBLISHED release would read as "no release". Stringify instead.
+          state="$(gh api "repos/$GH_REPO/releases" --paginate \
+                     --jq "map(select(.tag_name == \"$TAG\")) | first | if . == null then \"\" else (.draft | tostring) end" \
+                   || echo "")"
+          if [ "$state" = "false" ]; then
+            echo "::warning::$TAG is already PUBLISHED — leaving the release and tag alone."
+            exit 0
+          fi
+          if [ "$state" = "true" ]; then
+            gh release delete "$TAG" --yes
+            echo "Deleted draft release $TAG."
+          else
+            echo "No release found for $TAG (never created, or already stripped)."
+          fi
+          # Drop the tag so the same version can be re-cut. Tolerate 'already gone'.
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$TAG" \
+            && echo "Deleted tag $TAG." \
+            || echo "Tag $TAG already gone."

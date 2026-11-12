@@ -29,6 +29,10 @@ fn default_true() -> bool {
 pub fn default_sync_interval() -> u64 {
     900
 }
+/// Watcher debounce default (ms) — the one place the literal lives.
+pub fn default_watch_debounce() -> u64 {
+    750
+}
 fn default_theme() -> String {
     "workshop".to_string()
 }
@@ -171,8 +175,10 @@ pub struct StreamState {
     /// Entries the server accepted on the last upload.
     #[serde(default)]
     pub last_accepted: u64,
-    /// mtime (unix secs) of the SV file the last parse consumed — lets a periodic
-    /// pass skip re-parsing an unchanged multi-MB file.
+    /// LEGACY (pre-H3) per-stream copy of the SV file's mtime. The short-circuit now
+    /// reads `AppConfig::files` (per install·account·addon) instead — see `FileState`.
+    /// Kept so an existing config still deserializes and so `zero_all_cursors` can
+    /// clear the old value; nothing writes it on the sync path any more.
     #[serde(default)]
     pub file_mtime: Option<i64>,
     /// Is this stream STUCK (redesign §6)? True when the most recent sync attempt left
@@ -190,6 +196,30 @@ impl StreamState {
     }
 }
 
+/// Per-FILE parse state, keyed install · account · addon — one SavedVariables file
+/// (audit H3). `file_mtime` is a property of the FILE, not of any one stream in it, so
+/// it lives here rather than on `StreamState`: the short-circuit decides "re-parse this
+/// file?" BEFORE it knows which streams the file contains, and the old stream-agnostic
+/// `.find()` over `sync` could land on an ORPHAN stream record (a renamed/removed
+/// stream, or the old hardcoded `"fishlog"` sentinel) whose mtime is never updated —
+/// so the short-circuit never fired and every pass re-parsed a multi-MB file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileState {
+    pub install_id: String,
+    pub account: String,
+    pub addon: String, // catalog slug (lowercase)
+    /// mtime (unix secs) of the SV file the last parse consumed. `None`/absent =
+    /// unknown → always re-parse (the safe direction: an extra parse, never a skip).
+    #[serde(default)]
+    pub file_mtime: Option<i64>,
+}
+
+impl FileState {
+    pub fn matches(&self, install_id: &str, account: &str, addon: &str) -> bool {
+        self.install_id == install_id && self.account == account && self.addon == addon
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_base_url")]
@@ -204,13 +234,33 @@ pub struct AppConfig {
     pub account: Option<Account>,
     #[serde(default)]
     pub installs: Vec<Install>,
+    /// Run the interval backstop even while WoW is running. Fresh installs default ON
+    /// (it is the fallback behind instant capture: when the watcher can't arm, this is
+    /// the only thing that catches a /reload before the user quits). Kept
+    /// `#[serde(default)]` = false ON PURPOSE: an existing config carries the key, so
+    /// this changes the FRESH-install default only and never silently flips a setting
+    /// somebody deliberately turned off.
     #[serde(default)]
     pub sync_while_running: bool,
     #[serde(default = "default_sync_interval")]
     pub sync_interval_secs: u64,
+    /// Feedwerks §4.1 instant capture: watch SavedVariables and sync moments
+    /// after a /reload flush. Defaults ON — the backstop poll stays as the
+    /// safety net either way.
+    #[serde(default = "default_true")]
+    pub watch_enabled: bool,
+    /// Debounce for the watcher (ms) — lets the client finish writing the SV
+    /// file before the sync pass reads it.
+    #[serde(default = "default_watch_debounce")]
+    pub watch_debounce_ms: u64,
     /// Per install·account·addon·stream cursors + cached sync counters (§6).
     #[serde(default)]
     pub sync: Vec<StreamState>,
+    /// Per install·account·addon FILE parse state — the mtime short-circuit's store
+    /// (audit H3). Absent in a pre-H3 config, so it defaults empty and the first pass
+    /// after upgrade re-parses each file once, then records it.
+    #[serde(default)]
+    pub files: Vec<FileState>,
     #[serde(default)]
     pub dismissed_broadcast: Option<i64>,
     #[serde(default)]
@@ -286,9 +336,12 @@ impl Default for AppConfig {
             device_id: None,
             account: None,
             installs: Vec::new(),
-            sync_while_running: false,
+            sync_while_running: true,
             sync_interval_secs: default_sync_interval(),
+            watch_enabled: true,
+            watch_debounce_ms: default_watch_debounce(),
             sync: Vec::new(),
+            files: Vec::new(),
             dismissed_broadcast: None,
             onboarded: false,
             last_resync_honored: None,
@@ -313,8 +366,27 @@ impl AppConfig {
         let Ok(s) = std::fs::read_to_string(path) else {
             return AppConfig::default();
         };
-        match serde_json::from_str(&s) {
-            Ok(cfg) => cfg,
+        match serde_json::from_str::<AppConfig>(&s) {
+            Ok(mut cfg) => {
+                // Repair-in-place: configs written before the flavor derivation was
+                // fixed (audit H2) carry a WRONG `flavor` for three of the eight
+                // flavors — a Classic Era install recorded as "Classic", a Classic PTR
+                // one as "PTR". That string gates which addons may be installed, so
+                // re-derive it from the path rather than making the user re-add the
+                // install. Only touched when the path actually names a flavor, so a
+                // custom/bare AddOns folder keeps whatever it had.
+                for i in cfg.installs.iter_mut() {
+                    if crate::installs::flavor_token_from_path(&i.path).is_empty() {
+                        continue;
+                    }
+                    let derived = crate::installs::flavor_from_path(&i.path);
+                    if derived != i.flavor {
+                        eprintln!("config: install {} flavor '{}' → '{}'", i.id, i.flavor, derived);
+                        i.flavor = derived;
+                    }
+                }
+                cfg
+            }
             Err(e) => {
                 // Never silently discard a damaged config — the next save() would
                 // overwrite it and every install / sync cursor / device_id / pref
@@ -378,6 +450,52 @@ impl AppConfig {
         self.sync.iter_mut().find(|s| s.matches(install_id, account, addon, stream)).unwrap()
     }
 
+    /// Read the last-parsed mtime for ONE SavedVariables file (audit H3). `None` when
+    /// this file has never been parsed by a build that records it — the caller then
+    /// re-parses, which is always the safe answer.
+    pub fn file_mtime_of(&self, install_id: &str, account: &str, addon: &str) -> Option<i64> {
+        self.files.iter().find(|f| f.matches(install_id, account, addon)).and_then(|f| f.file_mtime)
+    }
+
+    /// Record the mtime a parse just consumed for ONE file (find-or-create). Same key
+    /// shape as `file_mtime_of`, so the read and the write can never disagree on
+    /// identity the way the old per-stream `.find()` did.
+    pub fn set_file_mtime(&mut self, install_id: &str, account: &str, addon: &str, mtime: Option<i64>) {
+        if let Some(f) = self.files.iter_mut().find(|f| f.matches(install_id, account, addon)) {
+            f.file_mtime = mtime;
+            return;
+        }
+        self.files.push(FileState {
+            install_id: install_id.to_string(),
+            account: account.to_string(),
+            addon: addon.to_string(),
+            file_mtime: mtime,
+        });
+    }
+
+    /// Drop PHANTOM stream records for one file (audit H3) — rows that carry no data
+    /// at all: the old hardcoded `"fishlog"` mtime sentinel and anything else that was
+    /// created only to park an mtime. Records-only, and deliberately narrow: a row is
+    /// removed ONLY when it has no cursor, no queue, no totals, no last-sync and is not
+    /// flagged stuck, so nothing that could still describe real queued data is touched
+    /// (repair-and-readmit, never wipe). Returns how many rows were dropped.
+    pub fn prune_phantom_stream_states(&mut self, install_id: &str, account: &str, addon: &str) -> usize {
+        let before = self.sync.len();
+        self.sync.retain(|s| {
+            let phantom = s.install_id == install_id
+                && s.account == account
+                && s.addon == addon
+                && s.cursor.is_empty()
+                && s.queued == 0
+                && s.total == 0
+                && s.last_accepted == 0
+                && s.last_sync.is_none()
+                && !s.stuck;
+            !phantom
+        });
+        before - self.sync.len()
+    }
+
     /// Read-only cursor lookup (empty string when unseen).
     pub fn cursor_of(&self, install_id: &str, account: &str, addon: &str, stream: &str) -> String {
         self.sync.iter().find(|s| s.matches(install_id, account, addon, stream))
@@ -400,6 +518,11 @@ impl AppConfig {
             s.cursor = String::new();
             s.file_mtime = None;
             s.queued = s.total;
+        }
+        // per-FILE mtimes too (audit H3): the short-circuit now reads `files`, so a
+        // resync that only cleared the stream rows would still skip the re-parse.
+        for f in self.files.iter_mut() {
+            f.file_mtime = None;
         }
         cleared
     }
@@ -449,6 +572,30 @@ impl AppConfig {
 pub struct AppState {
     pub config: std::sync::Mutex<AppConfig>,
     pub config_path: PathBuf,
+    /// The sync in-flight guard (audit C2). THREE entry points call `sync::sync_all`
+    /// with nothing else coordinating them — the backstop interval (`lib.rs`), the
+    /// SavedVariables watcher (`watcher.rs`, `manual = true`, so it skips the mtime
+    /// short-circuit and always re-parses) and the user's "Sync now" command. Overlapping
+    /// passes double the multi-MB parse, the gzip and the upload, and — worse — both call
+    /// `state.persist()`, which rewrites the WHOLE config last-writer-wins, so a setting
+    /// toggled during the overlap is silently reverted. `sync_all` `try_lock`s this at the
+    /// top and returns a "sync already running" skip rather than blocking (coalescing is
+    /// the right semantic for a timer and a debounced watcher, and a manual click must get
+    /// an honest answer, not a stall).
+    ///
+    /// MUST be `tokio::sync::Mutex` — the guard is held across `.await`.
+    pub syncing: tokio::sync::Mutex<()>,
+    /// "A capture is owed" flag for the coalescing path (`sync::sync_coalesced`). The
+    /// in-flight guard above makes a second caller SKIP, which is the honest answer for
+    /// a manual click but the wrong one for a SavedVariables flush: dropping that fire
+    /// silently defers the capture to the next backstop tick. A coalescing caller sets
+    /// this before it tries, so a fire that lands mid-pass is remembered and served by
+    /// exactly one follow-up pass instead of being lost.
+    pub sync_pending: std::sync::atomic::AtomicBool,
+    /// Serializes the coalescing runners so N fires during one pass collapse to ONE
+    /// follow-up pass, not N. Distinct from `syncing`: this one gates who gets to DRAIN
+    /// `sync_pending`, `syncing` gates who gets to run a pass.
+    pub coalescing: tokio::sync::Mutex<()>,
 }
 
 /// Are we running inside a Flatpak sandbox (the Steam Deck build)? True when the

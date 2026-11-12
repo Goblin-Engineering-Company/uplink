@@ -5,8 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
-  AppConfig, Account, DetectedInstall, Install, Catalog, Me, UpdateItem,
-  StreamState, SyncResult, SyncAccount, SelfUpdateStatus,
+  AppConfig, DetectedInstall, Install, Catalog, Me, UpdateItem,
+  StreamState, SyncResult, SyncLogEntry, SyncAccount, SelfUpdateStatus,
+  PairSessionInfo, PairPollOutcome,
 } from "./types";
 
 export const api = {
@@ -15,6 +16,9 @@ export const api = {
   setBaseUrl: (url: string) => invoke<void>("set_base_url", { url }),
   setSyncWhileRunning: (v: boolean) => invoke<void>("set_sync_while_running", { value: v }),
   setSyncInterval: (secs: number) => invoke<void>("set_sync_interval", { secs }),
+  // Feedwerks §4.1 instant capture (SavedVariables watcher)
+  setWatchEnabled: (enabled: boolean) => invoke<void>("set_watch_enabled", { enabled }),
+  setWatchDebounce: (ms: number) => invoke<void>("set_watch_debounce", { ms }),
   markOnboarded: () => invoke<void>("mark_onboarded"),
 
   // startup: launch-at-login (OS-owned, query live) + start-in-tray (config)
@@ -25,6 +29,8 @@ export const api = {
   // data sync (spec §6)
   syncNow: () => invoke<SyncResult[]>("sync_now"),
   getSyncStatus: () => invoke<StreamState[]>("get_sync_status"),
+  // The rolling log of finished passes, newest first (its own file beside the config)
+  getSyncLog: () => invoke<SyncLogEntry[]>("get_sync_log"),
   resetCursors: () => invoke<number>("reset_cursors"),
   purgeSyncQueue: () => invoke<number>("purge_sync_queue"),
   listSyncAccounts: (installId: string) => invoke<SyncAccount[]>("list_sync_accounts", { installId }),
@@ -34,9 +40,10 @@ export const api = {
   setAccountAlias: (account: string, alias: string) =>
     invoke<void>("set_account_alias", { account, alias }),
 
-  // auth
-  pairDevice: (code: string) =>
-    invoke<Account>("pair_device", { code }),
+  // auth — QR pairing (spec 2026-07-26): start a session, render its QR /
+  // approval link / code, then poll until a signed-in browser approves it.
+  pairStart: () => invoke<PairSessionInfo>("pair_start"),
+  pairPoll: (code: string, secret: string) => invoke<PairPollOutcome>("pair_poll", { code, secret }),
   unpair: () => invoke<void>("unpair"),
   // reconcile config against on-disk addons (installed by any method) + return catalog
   reconcileInstalled: () => invoke<Catalog>("reconcile_installed"),

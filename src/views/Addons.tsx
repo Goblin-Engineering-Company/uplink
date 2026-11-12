@@ -1,23 +1,34 @@
 import { useEffect, useState } from "react";
 import type { Ctx } from "../App";
 import { api } from "../lib/api";
-import type { Catalog, CatalogAddon, Install } from "../lib/types";
+import type { Catalog, CatalogAddon, Install, UpdateItem } from "../lib/types";
+import { supportsFlavor } from "../lib/types";
 import { AddonDot } from "../components/AddonDot";
 import { Select } from "../components/Select";
-import { versionCompare } from "../lib/version";
 
 // The core Phase-1 surface: pick a WoW install, install/update/uninstall addons,
 // control the channel/pin per addon. Roster comes entirely from the catalog.
 export function Addons({ ctx }: { ctx: Ctx }) {
   const { config } = ctx;
   const [catalog, setCatalog] = useState<Catalog | null>(null);
+  // THE work list, computed by Rust (`compute_updates`) — the same function
+  // `update_all` re-derives its work from. Every "needs delivery" mark in this view
+  // reads it, so the button's count can no longer promise work the bulk run skips.
+  const [updates, setUpdates] = useState<UpdateItem[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [installId, setInstallId] = useState(config.installs[0]?.id ?? "");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const load = () => api.reconcileInstalled().then(async (c) => { setCatalog(c); await ctx.reload(); }).catch((e) => setErr(String(e)));
+  // Reconcile against disk, then pull the work list. `check_updates` runs the SAME
+  // Rust `compute_updates` that `update_all` executes, so the count this view renders
+  // and the rows the bulk button installs are one computation, not two.
+  const load = () =>
+    api.reconcileInstalled()
+      .then(async (c) => { setCatalog(c); await ctx.reload(); return api.checkUpdates(); })
+      .then(setUpdates)
+      .catch((e) => setErr(String(e)));
   // Re-run on catalogNonce so a server-side catalog change (heartbeat dirty-stamp)
   // re-pulls the roster without a manual refresh.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -32,9 +43,17 @@ export function Addons({ ctx }: { ctx: Ctx }) {
   const isEntitled = (ch: string) => ch === "public" || granted.includes(ch);
   const entitledChans = catalog?.channel_defs.filter((c) => isEntitled(c.slug)) ?? [];
 
-  // For the SELECTED install: which channel we'd pull `a` from, its latest release,
-  // and whether the installed build is behind it. `behind` here is the single source
-  // of truth for both a row's "update" chip and the "Update all (N)" button.
+  // What Rust says this install still has to pull, by slug. `update_all` runs exactly
+  // these rows, so anything marked here IS in the bulk work list (UP-005).
+  const pending = updates.filter((u) => u.install_id === install?.id);
+  const pendingBySlug = new Map(pending.map((u) => [u.slug, u]));
+  // rows that never landed are installs, not updates — say which the button will do
+  const pendingVerb = pending.length > 0 && pending.every((u) => u.missing) ? "Install" : "Update";
+
+  // For the SELECTED install: which channel we'd pull `a` from and its latest release
+  // (display + the per-row button). Whether it needs delivery is NOT recomputed here —
+  // `work` is the Rust item, so a row's chip and the "Update all (N)" count share one
+  // source. `behind` = a newer build; `pendingInstall` = selected but never landed.
   function updateInfo(a: CatalogAddon) {
     const relChannels = Object.keys(a.channels || {}).filter(isEntitled);
     const downloadable = relChannels.length > 0;
@@ -43,21 +62,22 @@ export function Addons({ ctx }: { ctx: Ctx }) {
     const chan =
       isEntitled(effChan) && a.channels[effChan] ? effChan :
       ([...entitledChans].reverse().find((c) => a.channels[c.slug])?.slug ?? effChan);
-    const latest = a.channels[chan] ?? a.channels["public"];
-    const behind = !!(downloadable && state?.installed_version && latest &&
-      versionCompare(latest.version, state.installed_version) > 0);
-    return { downloadable, state, chan, latest, behind };
+    const work = pendingBySlug.get(a.slug);
+    const latest = (work ? { version: work.latest, url: work.url } : null) ?? a.channels[chan] ?? a.channels["public"];
+    const behind = !!work && !work.missing;
+    const pendingInstall = !!work && work.missing;
+    return { downloadable, state, chan: work?.channel ?? chan, latest, behind, pendingInstall, work };
   }
-
-  // Addons on THIS install with an entitled newer build ready to pull.
-  const updatable = (catalog?.addons ?? []).filter((a) => updateInfo(a).behind);
 
   async function doInstall(a: CatalogAddon, chan: string) {
     if (!install) return;
     const state = install.addons.find((x) => x.slug === a.slug);
+    // Prefer the target Rust already resolved for this row (pin + entitlement + flavor
+    // all applied), so clicking one row installs exactly what the bulk run would.
+    const work = pendingBySlug.get(a.slug);
     // a pinned version wins over the channel's latest (rollback / hold path)
     const pin = state?.pinned_version ? a.releases.find((r) => r.version === state.pinned_version && r.channel === chan) : undefined;
-    const latest = pin ?? a.channels[chan] ?? a.channels["public"];
+    const latest = work ? { version: work.latest, url: work.url } : (pin ?? a.channels[chan] ?? a.channels["public"]);
     if (!latest) { setErr(`No release for ${a.name} on ${chan}`); return; }
     setBusy(a.slug); setErr(null); setNote(null);
     try {
@@ -80,7 +100,13 @@ export function Addons({ ctx }: { ctx: Ctx }) {
       await api.reportInstalls().catch(() => {});
       const failed = done.filter((d) => d.includes("FAILED"));
       if (failed.length) setErr(failed.join(" · "));
-      setNote(done.length ? `Updated ${done.length - failed.length} of ${done.length}` : "Everything up to date");
+      // A bulk run that did nothing SAYS so — and says it differently depending on why,
+      // because "it silently did nothing" is the bug this button had (UP-005).
+      setNote(done.length
+        ? `${pendingVerb}d ${done.length - failed.length} of ${done.length}`
+        : pending.length
+        ? "Nothing was installed. The list was stale, so it just refreshed"
+        : "Everything up to date");
       await load(); // reconcile + reload so installed versions and the count refresh
     } catch (e) { setErr(String(e)); } finally { setBusy(null); }
   }
@@ -107,7 +133,7 @@ export function Addons({ ctx }: { ctx: Ctx }) {
 
   if (config.installs.length === 0) return (
     <><div className="page-head"><h1>Addons</h1></div>
-      <div className="banner">No WoW installs yet — add one in <b>Settings</b>.</div></>
+      <div className="banner">No WoW installs yet. Add one in <b>Settings</b>.</div></>
   );
 
   return (
@@ -122,17 +148,17 @@ export function Addons({ ctx }: { ctx: Ctx }) {
           </span>
         ))}
         <span className="spacer" />
-        {install?.online && updatable.length > 0 && (
+        {install?.online && pending.length > 0 && (
           <button className="btn-spark btn-sm" disabled={!!busy}
-            title={`Update ${updatable.length} addon${updatable.length > 1 ? "s" : ""} on ${install.label} · ${install.flavor}`}
+            title={`${pendingVerb} ${pending.length} addon${pending.length > 1 ? "s" : ""} on ${install.label} · ${install.flavor}`}
             onClick={updateAllNow}>
-            {busy === "__all__" ? <span className="spin" /> : `⬆ Update all (${updatable.length})`}
+            {busy === "__all__" ? <span className="spin" /> : `⬆ ${pendingVerb} all (${pending.length})`}
           </button>
         )}
         <button className="btn-ghost btn-sm" onClick={() => { setCatalog(null); load(); }}>↻ Refresh</button>
       </div>
 
-      {install && !install.online && <div className="banner">This install’s path is offline — its config is kept; reconnect the drive to manage addons.</div>}
+      {install && !install.online && <div className="banner">This game folder isn’t connected right now. Its settings are kept; reconnect the drive to manage addons.</div>}
       {err && <div className="err" style={{ marginBottom: "0.6rem" }}>{err}</div>}
       {note && <div className="ok" style={{ marginBottom: "0.6rem" }}>{note}</div>}
 
@@ -144,7 +170,32 @@ export function Addons({ ctx }: { ctx: Ctx }) {
           // downloads a not-yet-public addon; only someone WITHOUT an entitled build
           // sees Vote/Coming-soon. `updateInfo` (hoisted) owns the entitlement + target
           // math so this row and the top "Update all" count never diverge.
-          const { downloadable, state, chan, latest, behind } = updateInfo(a);
+          const { downloadable, state, chan, latest, behind, pendingInstall } = updateInfo(a);
+
+          // Flavor gate (mirrors catalog.rs::supports_flavor, which Rust enforces on
+          // install too). Shown-but-blocked rather than hidden, with the reason: an
+          // addon vanishing from the list on one install and not another reads as a bug.
+          if (install && !supportsFlavor(a, install.flavor)) {
+            const only = (a.flavors ?? []).join(" / ");
+            return (
+              <div key={a.slug} className="panel acc">
+                <div className="acc-head" onClick={() => setExpanded(open ? null : a.slug)}>
+                  <AddonDot slug={a.slug} size={12} />
+                  <b style={{ flex: 1 }}>{a.name}</b>
+                  <span className="chip" title={`Not available for ${install.flavor}`}>{only ? `${only} only` : "Not for this flavor"}</span>
+                  <span className="faint">{open ? "▲" : "▼"}</span>
+                </div>
+                {open && (
+                  <div className="acc-body">
+                    <p>{a.blurb || a.short}</p>
+                    <p className="faint" style={{ fontSize: "0.78rem", marginTop: "0.4rem" }}>
+                      {a.name} is built for {only || "another WoW version"} and won't run on {install.label} · {install.flavor}, so Uplink won't install it here. Pick a {only || "supported"} install above to get it.
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          }
 
           if (!downloadable) {
             const votable = a.status === "votable";
@@ -168,7 +219,7 @@ export function Addons({ ctx }: { ctx: Ctx }) {
                     </div>
                     <p className="faint" style={{ fontSize: "0.78rem", marginTop: "0.4rem" }}>
                       {votable
-                        ? "Not on a channel you can access yet — vote to help it get built. Sign in on the site to vote."
+                        ? "Not on a channel you can access yet. Sign in on the site and vote to help it get built."
                         : soon
                         ? "On the way. Open its page for details and progress."
                         : "Released on a channel you don't have access to."}
@@ -189,6 +240,7 @@ export function Addons({ ctx }: { ctx: Ctx }) {
                 <span className="chip chip-brass" title="Delivery channel">{chanLabel}</span>
                 <span className="tabular faint">{state?.installed_version ?? "not installed"}</span>
                 {behind ? <span className="chip chip-spark">update</span>
+                  : pendingInstall ? <span className="chip chip-spark">install pending</span>
                   : state?.installed_version ? <span className="chip chip-green">installed</span>
                   : <span className="chip">available</span>}
                 <span className="faint">{open ? "▲" : "▼"}</span>
